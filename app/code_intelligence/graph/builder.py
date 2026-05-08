@@ -145,13 +145,50 @@ class DependencyGraphBuilder:
                         self.import_map[file_path].add(imported_file)
     
     def _find_function_id(self, func_name: str, current_file: str) -> Optional[str]:
-        """Find function ID, handling various name formats."""
+        """
+        Find function ID — improved matching:
+        1. Direct lookup
+        2. Same-file priority (local calls)
+        3. self.xyz.method → strip 'self.' prefix
+        4. Last segment match (ClassName.method → method)
+        5. Skip external libs (no dot OR known stdlib prefix)
+        """
         all_functions = self.parser.get_all_functions()
+        if func_name.startswith("self."):
+            func_name = func_name[5:] 
+
+        _EXTERNAL_PREFIXES = (
+            "os.", "sys.", "re.", "json.", "math.", "time.", "datetime.",
+            "logging.", "typing.", "collections.", "itertools.", "functools.",
+            "pytest.", "mock.", "unittest.", "asyncio.", "pathlib.",
+            "sqlalchemy.", "pydantic.", "fastapi.", "celery.", "redis.",
+            "print", "len", "str", "int", "float", "list", "dict", "set",
+            "tuple", "bool", "type", "isinstance", "hasattr", "getattr",
+            "super", "range", "enumerate", "zip", "map", "filter",
+        )
+        if any(func_name.startswith(p) for p in _EXTERNAL_PREFIXES):
+            return None    
         
         # Direct lookup
         if func_name in all_functions:
             func = all_functions[func_name]
             return f"func:{func.full_name}@{func.file_path}"
+        
+        last_part = func_name.split(".")[-1]
+        same_file_match = None
+        for fname, func in all_functions.items():
+            fname_last = fname.split(".")[-1]
+            if fname_last == last_part and func.file_path == current_file:
+                same_file_match = f"func:{func.full_name}@{func.file_path}"
+                break
+
+        if same_file_match:
+            return same_file_match  
+
+        for fname, func in all_functions.items():
+            fname_last = fname.split(".")[-1]
+            if fname_last == last_part:
+                return f"func:{func.full_name}@{func.file_path}"  
         
         # Try with just the function name (for methods)
         for fname, func in all_functions.items():

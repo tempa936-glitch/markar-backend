@@ -237,7 +237,7 @@ def get_status(repo_id: str) -> Optional[dict]:
         orchestrator = job["orchestrator"]
         store = orchestrator.store
         base["graph_stats"] = store.get_stats()
-        base["repo_overview"] = _build_repo_overview(store, job.get("parser"))
+        base["repo_overview"] = _build_repo_overview(store, job.get("parser"),repo_path=job.get("repo_path") )
 
     return base
 def get_orchestrator_by_id(repo_id: str):
@@ -258,7 +258,7 @@ def list_all_repos() -> list:
         for j in _jobs.values()
     ]
 
-def _build_repo_overview(store, parser=None) -> dict:
+def _build_repo_overview(store, parser=None, repo_path=None) -> dict:
     """
     Graph ke nodes se poori repo ka X-ray banao.
     Ek baar mein sab kuch — files, classes, functions, risks.
@@ -267,7 +267,7 @@ def _build_repo_overview(store, parser=None) -> dict:
     """
     def _norm(path: str) -> str:
         """Backslash → forward slash, lowercase"""
-        return path.replace("\\", "/").lower().strip()
+        return path.replace("\\", "/").lower().strip().lstrip("/")
 
     # ── Step 1: Saare file nodes nikalo ──────────────────────
     file_nodes = {
@@ -287,6 +287,7 @@ def _build_repo_overview(store, parser=None) -> dict:
     files_breakdown = []
 
     for fid, fnode in file_nodes.items():
+        fnode_norm = _norm(fnode.file_path)
 
         # Is file ke functions
         file_funcs = [
@@ -310,7 +311,8 @@ def _build_repo_overview(store, parser=None) -> dict:
                     "file": store.nodes[p].file_path
                 }
                 for p in fn.parents
-                if p in store.nodes and store.nodes[p].type == "function"
+                if p in store.nodes 
+                and store.nodes[p].type == ("function", "method")
             ]
             # Yeh function kisko call karta hai
             calls = [
@@ -319,7 +321,8 @@ def _build_repo_overview(store, parser=None) -> dict:
                     "file": store.nodes[c].file_path
                 }
                 for c in fn.children
-                if c in store.nodes and store.nodes[c].type == "function"
+                if c in store.nodes 
+                and store.nodes[c].type == ("function", "method")
             ]
 
             functions_detail.append({
@@ -364,9 +367,11 @@ def _build_repo_overview(store, parser=None) -> dict:
         file_risk = _file_risk(total_funcs, max_dependents)
 
         try:
-            actual_lines = len(
-                Path(fnode.file_path).read_text(errors="ignore").splitlines()
-            )
+            if repo_path:
+                abs_path = os.path.join(repo_path, fnode.file_path.replace("\\", "/"))
+            else:
+                abs_path = fnode.file_path
+            actual_lines = len(Path(abs_path).read_text(errors="ignore").splitlines())    
         except:
             actual_lines = 0
 
