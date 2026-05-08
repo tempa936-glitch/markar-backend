@@ -154,9 +154,13 @@ class DependencyGraphBuilder:
         5. Skip external libs (no dot OR known stdlib prefix)
         """
         all_functions = self.parser.get_all_functions()
-        if func_name.startswith("self."):
-            func_name = func_name[5:] 
 
+        # self.something.method → strip self prefix
+        if func_name.startswith("self."):
+            func_name = func_name[5:]  # "self.db.execute" → "db.execute"
+
+        # Skip obvious external calls — single known builtins or
+        # calls starting with common stdlib/external prefixes
         _EXTERNAL_PREFIXES = (
             "os.", "sys.", "re.", "json.", "math.", "time.", "datetime.",
             "logging.", "typing.", "collections.", "itertools.", "functools.",
@@ -167,13 +171,14 @@ class DependencyGraphBuilder:
             "super", "range", "enumerate", "zip", "map", "filter",
         )
         if any(func_name.startswith(p) for p in _EXTERNAL_PREFIXES):
-            return None    
-        
-        # Direct lookup
+            return None
+
+        # 1. Direct lookup
         if func_name in all_functions:
             func = all_functions[func_name]
             return f"func:{func.full_name}@{func.file_path}"
-        
+
+        # 2. Same-file priority — local calls should prefer same file
         last_part = func_name.split(".")[-1]
         same_file_match = None
         for fname, func in all_functions.items():
@@ -183,18 +188,19 @@ class DependencyGraphBuilder:
                 break
 
         if same_file_match:
-            return same_file_match  
+            return same_file_match
 
+        # 3. Global match — any file, last segment match
         for fname, func in all_functions.items():
             fname_last = fname.split(".")[-1]
             if fname_last == last_part:
-                return f"func:{func.full_name}@{func.file_path}"  
-        
-        # Try with just the function name (for methods)
-        for fname, func in all_functions.items():
-            if fname.endswith(func_name) or fname.split('.')[-1] == func_name:
                 return f"func:{func.full_name}@{func.file_path}"
-        
+
+        # 4. Endswith match (ClassName.method_name)
+        for fname, func in all_functions.items():
+            if fname.endswith(func_name):
+                return f"func:{func.full_name}@{func.file_path}"
+
         return None
     
     def _resolve_imports(self, module_name: str) -> Set[str]:
