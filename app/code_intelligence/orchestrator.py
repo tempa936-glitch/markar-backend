@@ -37,9 +37,29 @@ class CodeIntelligenceOrchestrator:
     def initialize(self) -> Dict:
         print(f"Initializing Markar Intelligence for: {self.repo_path}")
 
+        # ── Step 1: Python files via existing ast parser (fast, deep) ──────
         parser = RepositoryParser(self.repo_path)
         parser.parse()
-        print(f"  Parsed {len(parser.files)} files")
+        print(f"  Parsed {len(parser.files)} Python files (ast)")
+
+        # ── Step 2: All other languages via UniversalParser (tree-sitter) ──
+        try:
+            from .parser.universal_parser import UniversalParser
+            uni = UniversalParser()
+            # Parse every non-python file in repo
+            non_py_files = uni.parse_repository(
+                self.repo_path,
+                languages=[l for l in uni.get_supported_languages() if l != "python"],
+            )
+            # Merge into parser.files so DependencyGraphBuilder sees everything
+            for rel_path, parsed_file in non_py_files.items():
+                if rel_path not in parser.files:
+                    parser.files[rel_path] = parsed_file.to_file_info()
+            print(f"  Parsed {len(non_py_files)} non-Python files (tree-sitter)")
+        except Exception as e:
+            print(f"  [UniversalParser] skipped: {e}")
+
+        print(f"  Total files in graph: {len(parser.files)}")
 
         builder = DependencyGraphBuilder(parser)
         nodes   = builder.build()

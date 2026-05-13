@@ -19,3 +19,30 @@ LangChain
 LangGraph
 OpenAI
 ChromaDB
+
+
+# ── Tree-sitter: Multi-language parsing ───────────────────────────────────────
+tree-sitter==0.25.2
+tree-sitter-python
+tree-sitter-javascript
+tree-sitter-typescript
+tree-sitter-java
+tree-sitter-go
+tree-sitter-rust
+tree-sitter-c
+tree-sitter-cpp
+tree-sitter-c-sharp
+tree-sitter-ruby
+tree-sitter-php
+tree-sitter-kotlin
+# Optional (install if needed):
+# tree-sitter-swift
+# tree-sitter-scala
+# tree-sitter-bash
+# tree-sitter-lua
+# tree-sitter-elixir
+# tree-sitter-haskell
+# tree-sitter-ocaml
+# tree-sitter-html
+# tree-sitter-markdown
+# tree-sitter-toml

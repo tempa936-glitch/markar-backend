@@ -117,7 +117,23 @@ def _worker(repo_id: str):
         # ← AB FRONTEND KO DETAILS MIL JAATI HAIN
         
         # ── Stage 3: Full graph build ───────────────────────
-        job["status"] = "PARSING"
+        job["status"]  = "CHECKING_LANGUAGES"
+
+        try:
+            from app.code_intelligence.parser.universal_parser import UniversalParser
+            _uni = UniversalParser()
+            _avail = _uni.languages_available()
+            job["languages_installed"] = sorted([l for l, ok in _avail.items() if ok])
+            job["languages_missing"]   = sorted([l for l, ok in _avail.items() if not ok])
+            job["supported_extensions"] = _uni.get_supported_extensions()
+        except Exception as _le:
+            job["languages_installed"] = []
+            job["languages_missing"]   = []
+            job["supported_extensions"] = {}
+            job["language_check_error"] = str(_le)
+
+             # ── Stage 4: Full graph build ───────────────────────
+        job["status"] = "PARSING"  
         from app.code_intelligence import CodeIntelligenceOrchestrator
         instance = CodeIntelligenceOrchestrator(job["repo_path"])
         init_result = instance.initialize()
@@ -232,6 +248,14 @@ def get_status(repo_id: str) -> Optional[dict]:
         "created_at": job["created_at"],
         "graph_stats": None,
         "repo_overview": None,
+         # Language support — available after CHECKING_LANGUAGES stage completes
+        "languages": {
+            "installed": job.get("languages_installed"),
+            "missing":   job.get("languages_missing"),
+            "supported_extensions": job.get("supported_extensions"),
+            "tip": "pip install tree-sitter-<lang> to add missing grammars"
+                   if job.get("languages_missing") else None,
+        } if job.get("languages_installed") is not None else None,             
     }
 
     # Graph ready hone ke baad hi deep data add karo

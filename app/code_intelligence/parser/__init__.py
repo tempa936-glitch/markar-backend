@@ -1,4 +1,4 @@
-"""Parser module - AST-based Python code parsing."""
+"""Parser module — AST-based Python + Tree-sitter multi-language parsing."""
 
 from .code_parser import (
     CodeParser,
@@ -6,14 +6,27 @@ from .code_parser import (
     Function,
     ClassInfo,
     ImportInfo,
-    FileInfo
+    FileInfo,
+)
+
+from .universal_parser import (
+    UniversalParser,
+    ParsedFile,
+    EXTENSION_MAP,
+    LANG_QUERIES,
 )
 
 __all__ = [
-    'CodeParser',
-    'RepositoryParser',
-    'Function',
-    'ClassInfo',
-    'ImportInfo',
-    'FileInfo'
+    # Original (Python-only)
+    "CodeParser",
+    "RepositoryParser",
+    "Function",
+    "ClassInfo",
+    "ImportInfo",
+    "FileInfo",
+    # New (multi-language)
+    "UniversalParser",
+    "ParsedFile",
+    "EXTENSION_MAP",
+    "LANG_QUERIES",
 ]
