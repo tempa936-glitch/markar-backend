@@ -10,12 +10,14 @@ import os, shutil, tempfile, hashlib
 
 from app.code_intelligence import CodeIntelligenceOrchestrator, QueryType, WorkflowExecutor
 from app.dependencies.code_intelligence import get_orchestrator, set_orchestrator
+from fastapi.responses import StreamingResponse
 
 from app.services.repo_service import (
     start_initialization,
     get_status as repo_get_status,    # ← alias do conflict avoid karne ke liye
     get_orchestrator_by_id,
-    list_all_repos
+    list_all_repos,
+    stream_status
 )
 
 # TWO separate routers — no duplicate
@@ -91,6 +93,22 @@ async def repo_status(                    # ← naam badla — conflict nahi hog
     if not result:
         raise HTTPException(status_code=404, detail=f"Repo {repo_id} not found")
     return result
+
+@ci_router.get("/stream/{repo_id}")
+async def stream_repo_status(repo_id: str):
+    """
+    SSE endpoint — status updates stream karo
+    Frontend yahan connect kare aur wait kare
+    """
+    return StreamingResponse(
+        stream_status(repo_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no", 
+        }
+    )        
 
 @ci_router.get("/analyze")
 async def analyze(

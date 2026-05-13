@@ -7,6 +7,8 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+import asyncio
+from typing import AsyncGenerator
 
 _jobs = {}  # { repo_id: { ...job data... } }
 
@@ -465,3 +467,35 @@ def _file_risk(func_count: int, max_dependents: int) -> str:
     if func_count > 15:     return "MEDIUM"
     if func_count > 5:      return "LOW"
     return "ISOLATED"
+
+
+async def stream_status(repo_id: str) -> AsyncGenerator[str, None]:
+    """
+    SSE generator — status updates stream karo
+    jab tak READY ya ERROR na ho
+    """
+    import json, asyncio
+
+    while True:
+        job = _jobs.get(repo_id)
+
+        if not job:
+            yield f"data: {json.dumps({'error': 'Repo not found'})}\n\n"
+            break
+
+        status = job["status"]
+        
+        payload = {
+            "status": status,
+            "overview": job.get("overview"),
+            "graph_ready": job.get("graph_ready", False),
+            "graph_stats": job.get("graph_stats"),
+            "error": job.get("error"),
+        }
+
+        yield f"data: {json.dumps(payload)}\n\n"
+
+        if status in ("READY", "ERROR"):
+            break
+
+        await asyncio.sleep(1)
