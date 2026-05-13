@@ -132,16 +132,27 @@ def _worker(repo_id: str):
             job["supported_extensions"] = {}
             job["language_check_error"] = str(_le)
 
-             # ── Stage 4: Full graph build ───────────────────────
-        job["status"] = "PARSING"  
-        from app.code_intelligence import CodeIntelligenceOrchestrator
-        instance = CodeIntelligenceOrchestrator(job["repo_path"])
-        init_result = instance.initialize()
-        job["orchestrator"] = instance
-        job["parser"] = instance.store
-        job["graph_stats"] = init_result
-        job["graph_ready"] = True
-        job["status"] = "READY"
+        # ── Stage 4: Full graph build ───────────────────────
+        job["status"] = "PARSING"
+        print(f"[STAGE4] Starting for {job['repo_path']}")
+        try:
+            from app.code_intelligence import CodeIntelligenceOrchestrator
+            instance = CodeIntelligenceOrchestrator(job["repo_path"])
+            print(f"[STAGE4] Orchestrator created")
+            init_result = instance.initialize()
+            print(f"[STAGE4] Initialize done: {type(init_result)}")
+            job["orchestrator"] = instance
+            job["parser"] = instance.store
+            job["graph_stats"] = init_result
+            job["graph_ready"] = True
+            job["status"] = "READY"
+            print(f"[STAGE4] ✅ READY!") 
+        except Exception as stage4_error:
+            import traceback
+            print(f"[STAGE4] ❌ ERROR: {stage4_error}")      # ← ADD
+            print(traceback.format_exc())                    # ← ADD
+            job["status"] = "ERROR"
+            job["error"] = str(stage4_error)    
         
     except Exception as e:
         import traceback
@@ -338,7 +349,7 @@ def _build_repo_overview(store, parser=None, repo_path=None) -> dict:
                 }
                 for p in fn.parents
                 if p in store.nodes 
-                and store.nodes[p].type == ("function", "method")
+                and store.nodes[p].type in ("function", "method")
             ]
             # Yeh function kisko call karta hai
             calls = [
@@ -348,7 +359,7 @@ def _build_repo_overview(store, parser=None, repo_path=None) -> dict:
                 }
                 for c in fn.children
                 if c in store.nodes 
-                and store.nodes[c].type == ("function", "method")
+                and store.nodes[c].type in ("function", "method")
             ]
 
             functions_detail.append({
