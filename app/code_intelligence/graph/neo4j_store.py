@@ -13,7 +13,8 @@ from datetime import datetime
 from .builder import DependencyNode
 from .analyzer import GraphAnalyzer
 
-BATCH_SIZE = 500  # kitne nodes ek baar Neo4j mein jaayenge
+BATCH_SIZE = 5000   # ek baar mein 5000 — kam trips, zyada fast
+REL_BATCH  = 8000   # relations larger batch (simpler structure)
 
 
 def _get_driver():
@@ -59,59 +60,76 @@ class Neo4jStore:
 
     # ── Save — graph build ke baad call hoga ─────────────────────────────────
     def save(self, nodes: Dict[str, DependencyNode]):
+        import time
         self.nodes    = nodes
         self.analyzer = GraphAnalyzer(nodes)
         driver = self._connect()
         self._create_indexes()
 
-        print(f"  [Neo4j] Saving {len(nodes)} nodes...")
+        total_nodes = len(nodes)
+        print(f"  [Neo4j] Saving {total_nodes} nodes...")
 
-        # Purana data delete karo
+        # ── 1. Purana data delete (ek trip) ──────────────────────────────────
         with driver.session() as s:
             s.run("MATCH (n:CodeNode {repo_id:$r}) DETACH DELETE n", r=self.repo_id)
 
-        # Nodes batch mein save karo
+        # ── 2. Node list ek baar banao ────────────────────────────────────────
         node_list = [
             {"node_id": nid, "node_type": n.type,
              "name": n.name, "file_path": n.file_path, "line_no": n.line_no}
             for nid, n in nodes.items()
         ]
-        for i in range(0, len(node_list), BATCH_SIZE):
-            batch = node_list[i:i+BATCH_SIZE]
-            with driver.session() as s:
+
+        # ── 3. Nodes — EK session, multiple batches (session open/close overhead khatam) ──
+        t0 = time.time()
+        with driver.session() as s:
+            for i in range(0, len(node_list), BATCH_SIZE):
+                batch = node_list[i:i + BATCH_SIZE]
                 s.run("""
                     UNWIND $batch AS row
-                    MERGE (n:CodeNode {node_id:row.node_id, repo_id:$r})
-                    SET n.node_type=row.node_type, n.name=row.name,
-                        n.file_path=row.file_path, n.line_no=row.line_no
+                    CREATE (n:CodeNode {
+                        node_id:row.node_id, repo_id:$r,
+                        node_type:row.node_type, name:row.name,
+                        file_path:row.file_path, line_no:row.line_no
+                    })
                 """, batch=batch, r=self.repo_id)
-            print(f"  [Neo4j] Nodes {i+len(batch)}/{len(node_list)}")
+                done = min(i + BATCH_SIZE, len(node_list))
+                pct  = done * 100 // len(node_list)
+                print(f"  [Neo4j] Nodes {done}/{len(node_list)} ({pct}%)")
+        print(f"  [Neo4j] Nodes done in {time.time()-t0:.1f}s")
 
-        # Relationships save karo
+        # ── 4. Relations ──────────────────────────────────────────────────────
         rels = [{"from": nid, "to": cid}
                 for nid, n in nodes.items()
                 for cid in n.children if cid in nodes]
-        for i in range(0, len(rels), BATCH_SIZE):
-            batch = rels[i:i+BATCH_SIZE]
-            with driver.session() as s:
+        total_rels = len(rels)
+        print(f"  [Neo4j] Saving {total_rels} relations...")
+
+        t1 = time.time()
+        with driver.session() as s:
+            for i in range(0, total_rels, REL_BATCH):
+                batch = rels[i:i + REL_BATCH]
                 s.run("""
                     UNWIND $batch AS row
                     MATCH (a:CodeNode {node_id:row.from, repo_id:$r})
                     MATCH (b:CodeNode {node_id:row.to,   repo_id:$r})
-                    MERGE (a)-[:DEPENDS_ON]->(b)
+                    CREATE (a)-[:DEPENDS_ON]->(b)
                 """, batch=batch, r=self.repo_id)
-            print(f"  [Neo4j] Relations {i+len(batch)}/{len(rels)}")
+                done = min(i + REL_BATCH, total_rels)
+                pct  = done * 100 // total_rels
+                print(f"  [Neo4j] Relations {done}/{total_rels} ({pct}%)")
+        print(f"  [Neo4j] Relations done in {time.time()-t1:.1f}s")
 
-        # Metadata local save karo
+        # ── 5. Metadata local save ────────────────────────────────────────────
         with open(self.metadata_file, "w") as f:
             json.dump({
                 "repo_id":     self.repo_id,
                 "timestamp":   datetime.now().isoformat(),
-                "total_nodes": len(nodes),
-                "version":     "neo4j-1.0"
+                "total_nodes": total_nodes,
+                "version":     "neo4j-2.0"
             }, f, indent=2)
 
-        print(f"  [Neo4j] ✅ Done — {len(nodes)} nodes, {len(rels)} relations")
+        print(f"  [Neo4j] ✅ Done — {total_nodes} nodes, {total_rels} relations")
 
     # ── Stats — COUNT queries, instant ───────────────────────────────────────
     def get_stats(self) -> Dict:

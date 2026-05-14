@@ -632,45 +632,56 @@ class UniversalParser:
         languages: Optional[List[str]] = None,
     ) -> Dict[str, ParsedFile]:
         """
-        Parse all supported files in a repository.
-        
+        Parse all supported files in a repository — parallel via ThreadPoolExecutor.
+
         Args:
             repo_path: Root directory of the repo
             languages: Optional whitelist e.g. ["python", "javascript"]
                        If None, all supported languages are parsed.
-        
+
         Returns:
             Dict[relative_path → ParsedFile]
         """
+        import os
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         repo = Path(repo_path)
-        results: Dict[str, ParsedFile] = {}
-        
         all_extensions = set(EXTENSION_MAP.keys()) | PYTHON_EXTENSIONS
 
+        # ── 1. Collect candidate files (fast, single-pass) ────────────────
+        candidates: List[tuple] = []  # (abs_path_str, rel_path_str)
         for file_path in repo.rglob("*"):
             if not file_path.is_file():
                 continue
-
-            # Skip excluded dirs
             if any(excl in file_path.parts for excl in self.exclude_dirs):
                 continue
-
             ext = file_path.suffix.lower()
             if ext not in all_extensions:
                 continue
-
             lang = EXTENSION_MAP.get(ext, "python")
             if languages and lang not in languages:
                 continue
+            candidates.append((str(file_path), str(file_path.relative_to(repo))))
 
-            rel_path = str(file_path.relative_to(repo))
+        # ── 2. Parse in parallel ──────────────────────────────────────────
+        results: Dict[str, ParsedFile] = {}
 
+        def _parse_one(args):
+            abs_path, rel_path = args
             try:
-                parsed = self.parse_file(str(file_path))
-                parsed.path = rel_path  # store relative path
-                results[rel_path] = parsed
+                parsed = self.parse_file(abs_path)
+                parsed.path = rel_path
+                return rel_path, parsed
             except Exception as e:
                 print(f"[UniversalParser] skipping {rel_path}: {e}")
+                return None
+
+        max_workers = min(16, os.cpu_count() or 4)
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for result in pool.map(_parse_one, candidates):
+                if result is not None:
+                    rel_path, parsed = result
+                    results[rel_path] = parsed
 
         return results
 

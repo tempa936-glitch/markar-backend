@@ -41,38 +41,45 @@ class CodeIntelligenceOrchestrator:
         self._analyzer: Optional[GraphAnalyzer] = None        
 
     def initialize(self) -> Dict:
+        import time
+        t0 = time.time()
         print(f"Initializing Markar Intelligence for: {self.repo_path}")
 
-        # ── Step 1: Python files via existing ast parser (fast, deep) ──────
+        # ── Step 1: Python files via existing ast parser (parallel) ────────
+        t1 = time.time()
         parser = RepositoryParser(self.repo_path)
         parser.parse()
-        print(f"  Parsed {len(parser.files)} Python files (ast)")
+        print(f"  Parsed {len(parser.files)} Python files (ast) [{time.time()-t1:.1f}s]")
 
-        # ── Step 2: All other languages via UniversalParser (tree-sitter) ──
+        # ── Step 2: All other languages via UniversalParser (parallel) ─────
+        t2 = time.time()
         try:
             from .parser.universal_parser import UniversalParser
             uni = UniversalParser()
-            # Parse every non-python file in repo
             non_py_files = uni.parse_repository(
                 self.repo_path,
                 languages=[l for l in uni.get_supported_languages() if l != "python"],
             )
-            # Merge into parser.files so DependencyGraphBuilder sees everything
             for rel_path, parsed_file in non_py_files.items():
                 if rel_path not in parser.files:
                     parser.files[rel_path] = parsed_file.to_file_info()
-            print(f"  Parsed {len(non_py_files)} non-Python files (tree-sitter)")
+            print(f"  Parsed {len(non_py_files)} non-Python files (tree-sitter) [{time.time()-t2:.1f}s]")
         except Exception as e:
             print(f"  [UniversalParser] skipped: {e}")
 
         print(f"  Total files in graph: {len(parser.files)}")
 
+        # ── Step 3: Build graph ─────────────────────────────────────────────
+        t3 = time.time()
         builder = DependencyGraphBuilder(parser)
         nodes   = builder.build()
-        print(f"  Built graph with {len(nodes)} nodes")
+        print(f"  Built graph with {len(nodes)} nodes [{time.time()-t3:.1f}s]")
 
+        # ── Step 4: Persist ─────────────────────────────────────────────────
+        t4 = time.time()
         self.store.save(nodes)
-        print("  Graph stored")
+        print(f"  Graph stored [{time.time()-t4:.1f}s]")
+        print(f"  ✓ Total initialization time: {time.time()-t0:.1f}s")
 
         # ← CHANGE 1: pass repo_path so analyzer can read file sizes
         self._analyzer = GraphAnalyzer(nodes, repo_path=self.repo_path)

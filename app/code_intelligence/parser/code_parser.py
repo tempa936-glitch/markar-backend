@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 from typing import Dict, List, Set, Tuple, Optional
 from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 
 @dataclass
@@ -188,36 +190,77 @@ class RepositoryParser:
         
         return self.files
     
-    def _parse_file(self, file_path: str):
-        """Parse a single Python file."""
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            tree = ast.parse(content)
-            parser = CodeParser(file_path)
-            parser.visit(tree)
-            
-            # Get relative path
-            rel_path = os.path.relpath(file_path, self.repo_path)
-            
-            file_info = FileInfo(
-                path=rel_path,
-                functions=parser.functions,
-                classes=parser.classes,
-                imports=parser.imports
-            )
-            
-            self.files[rel_path] = file_info
-        except SyntaxError as e:
-            print(f"Syntax error in {file_path}: {e}")
+def _parse_single_py_file(args) -> Optional[tuple]:
+    """Parse one Python file — designed to run in a thread pool."""
+    file_path, repo_path, exclude_dirs = args
+    if any(excluded in file_path.parts for excluded in exclude_dirs):
+        return None
+    try:
+        with open(str(file_path), 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read()
+        tree = ast.parse(content)
+        parser = CodeParser(str(file_path))
+        parser.visit(tree)
+        rel_path = os.path.relpath(str(file_path), str(repo_path))
+        file_info = FileInfo(
+            path=rel_path,
+            functions=parser.functions,
+            classes=parser.classes,
+            imports=parser.imports,
+        )
+        return rel_path, file_info
+    except SyntaxError as e:
+        print(f"Syntax error in {file_path}: {e}")
+        return None
+    except Exception as e:
+        print(f"Error parsing {file_path}: {e}")
+        return None
+
+class RepositoryParser:
+    """Parse entire repository and build structure."""
+    
+    def __init__(self, repo_path: str):
+        self.repo_path = Path(repo_path)
+        self.files: Dict[str, FileInfo] = {}
+        # ── Cached lookup index — built once by DependencyGraphBuilder ──
+        self._func_index: Optional[Dict[str, Function]] = None
+    
+    def parse(self, exclude_dirs: Set[str] = None) -> Dict[str, FileInfo]:
+        """Parse all Python files in the repository — parallel."""
+        if exclude_dirs is None:
+            exclude_dirs = {'.venv', '__pycache__', '.git', 'node_modules', '.pytest_cache'}
+        
+        py_files = [
+            p for p in self.repo_path.rglob('*.py')
+            if not any(excl in p.parts for excl in exclude_dirs)
+        ]
+
+        # Parallel parse with ThreadPoolExecutor
+        results: Dict[str, FileInfo] = {}
+        with ThreadPoolExecutor(max_workers=min(16, os.cpu_count() or 4)) as pool:
+            futures = {
+                pool.submit(_parse_single_py_file, (fp, self.repo_path, exclude_dirs)): fp
+                for fp in py_files
+            }
+            for future in as_completed(futures):
+                res = future.result()
+                if res is not None:
+                    rel_path, file_info = res
+                    results[rel_path] = file_info
+
+        self.files = results
+        self._func_index = None  # invalidate cache
+        return self.files        
     
     def get_all_functions(self) -> Dict[str, Function]:
-        """Get all functions keyed by their full names."""
+        """Get all functions keyed by their full names — cached."""
+        if self._func_index is not None:
+            return self._func_index
         result = {}
         for file_info in self.files.values():
             for func in file_info.functions:
                 result[func.full_name] = func
+        self._func_index = result
         return result
     
     def get_all_classes(self) -> Dict[str, ClassInfo]:
