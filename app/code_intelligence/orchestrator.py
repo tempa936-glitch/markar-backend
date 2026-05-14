@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 from enum import Enum
 
 from .parser import RepositoryParser
-from .graph import DependencyGraphBuilder, GraphAnalyzer, GraphStore
+from .graph import DependencyGraphBuilder,  GraphAnalyzer, GraphStore, Neo4jStore
 from app.agents.impact_agent import ImpactAnalysisAgent
 
 
@@ -24,15 +24,21 @@ class QueryType(str, Enum):
 
 class CodeIntelligenceOrchestrator:
 
-    def __init__(self, repo_path: str, graph_storage_path: str = None):
+    def __init__(self, repo_path: str, graph_storage_path: str = None, repo_id: str = None):
         self.repo_path   = repo_path
         # Bug fix: graph storage hamesha repo ke andar hogi, relative path nahi
         import os
         storage = graph_storage_path or os.path.join(repo_path, ".code_graph")
-        self.store       = GraphStore(storage)
+        if os.getenv("NEO4J_URI") and repo_id:
+            self.store = Neo4jStore(repo_id=repo_id, storage_path=storage)
+            print(f"  [Orchestrator] Neo4j store (repo: {repo_id})")
+        else:
+            self.store = GraphStore(storage)
+            print(f"  [Orchestrator] Local GraphStore")
+
         self.agent       = ImpactAnalysisAgent(self.store)
         self.initialized = False
-        self._analyzer: Optional[GraphAnalyzer] = None   # ← NEW
+        self._analyzer: Optional[GraphAnalyzer] = None        
 
     def initialize(self) -> Dict:
         print(f"Initializing Markar Intelligence for: {self.repo_path}")

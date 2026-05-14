@@ -423,12 +423,14 @@ class TreeSitterExtractor:
 
             name = name or "<lambda>"
             params = self._extract_params(node, src)
+            calls  = self._extract_calls(node, src)   # ← NEW
             func = Function(
                 name=name,
                 file_path=self.file_path,
                 line_no=node.start_point[0] + 1,
                 class_name=current_class,
                 params=params,
+                calls=calls,                           # ← NEW
             )
             result.functions.append(func)
             # Still recurse (nested functions / lambdas)
@@ -488,6 +490,72 @@ class TreeSitterExtractor:
                                 break
                         params.append(ident or _text(param, src))
         return [p.strip() for p in params if p.strip() and len(p) < 64]
+
+    # Noise: these prefixes are external/runtime — skip them in calls list
+    _SKIP_CALL_PREFIXES = (
+        "console.", "process.", "Math.", "JSON.", "Object.", "Array.",
+        "Promise.", "Date.", "Error.", "Buffer.", "setTimeout", "setInterval",
+        "clearTimeout", "clearInterval", "parseInt", "parseFloat", "isNaN",
+        "require(", "res.", "req.", "next(", "next.",
+        # Python stdlib / common
+        "print", "len", "str", "int", "float", "list", "dict", "set",
+        "os.", "sys.", "re.", "json.", "math.", "time.", "datetime.",
+        "logging.", "pathlib.", "typing.", "super(",
+        # framework noise
+        "mongoose.", "Schema(", "model(", "router.",
+    )
+
+    def _extract_calls(self, func_node, src: bytes) -> List[str]:
+        """
+        Walk a function body and collect all call_expression targets.
+        Returns a de-duped list of called function names (filtered for noise).
+        """
+        calls: List[str] = []
+        seen: set = set()
+
+        # Per-language call node names
+        call_node_types = {
+            "javascript": "call_expression",
+            "typescript": "call_expression",
+            "tsx":        "call_expression",
+            "python":     "call",          # handled by ast, but just in case
+            "java":       "method_invocation",
+            "kotlin":     "call_expression",
+            "go":         "call_expression",
+            "rust":       "call_expression",
+            "c":          "call_expression",
+            "cpp":        "call_expression",
+            "c_sharp":    "invocation_expression",
+            "ruby":       "call",
+            "php":        "function_call_expression",
+            "swift":      "call_expression",
+            "scala":      "call_expression",
+        }
+        target_type = call_node_types.get(self.lang_name, "call_expression")
+
+        def walk(node):
+            if node.type == target_type:
+                # Get the callee: 'function' field (JS/Go/Rust) or 'method' (Java)
+                callee = (
+                    node.child_by_field_name("function")
+                    or node.child_by_field_name("method")
+                    or node.child_by_field_name("name")
+                )
+                if callee:
+                    call_text = _text(callee, src).strip()
+                    # Keep only reasonable-length names
+                    if call_text and len(call_text) <= 80:
+                        # Strip noise prefixes
+                        skip = any(call_text.startswith(p) for p in self._SKIP_CALL_PREFIXES)
+                        # Skip string/number literals and common single-word builtins
+                        if not skip and call_text not in seen:
+                            seen.add(call_text)
+                            calls.append(call_text)
+            for child in node.children:
+                walk(child)
+
+        walk(func_node)
+        return calls[:50]  # cap at 50 to avoid runaway
 
 
 # ─── Public API ────────────────────────────────────────────────────────────────

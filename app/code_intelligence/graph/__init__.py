@@ -1,3 +1,6 @@
+from .store import GraphStore
+from .neo4j_store import Neo4jStore
+
 """Graph module - Dependency graph building and analysis."""
 
 from .builder import (
@@ -13,5 +16,6 @@ __all__ = [
     'DependencyNode',
     'CallRelation',
     'GraphAnalyzer',
-    'GraphStore'
+    'GraphStore',
+    'Neo4jStore',
 ]

@@ -19,6 +19,7 @@ LangChain
 LangGraph
 OpenAI
 ChromaDB
+neo4j>=5.0.0
 
 
 # ── Tree-sitter: Multi-language parsing ───────────────────────────────────────

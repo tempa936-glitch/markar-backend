@@ -137,7 +137,7 @@ def _worker(repo_id: str):
         print(f"[STAGE4] Starting for {job['repo_path']}")
         try:
             from app.code_intelligence import CodeIntelligenceOrchestrator
-            instance = CodeIntelligenceOrchestrator(job["repo_path"])
+            instance = CodeIntelligenceOrchestrator(job["repo_path"],repo_id=job["repo_id"])
             print(f"[STAGE4] Orchestrator created")
             init_result = instance.initialize()
             print(f"[STAGE4] Initialize done: {type(init_result)}")
@@ -271,10 +271,16 @@ def get_status(repo_id: str) -> Optional[dict]:
 
     # Graph ready hone ke baad hi deep data add karo
     if job["graph_ready"] and job.get("orchestrator"):
-        orchestrator = job["orchestrator"]
-        store = orchestrator.store
+        store = job["orchestrator"].store
         base["graph_stats"] = store.get_stats()
-        base["repo_overview"] = _build_repo_overview(store, job.get("parser"),repo_path=job.get("repo_path") )
+
+        from app.code_intelligence.graph.neo4j_store import Neo4jStore
+        if isinstance(store, Neo4jStore):
+            base["repo_overview"] = store.get_repo_overview()
+        else:
+            base["repo_overview"] = _build_repo_overview(
+                store, job.get("parser"), repo_path=job.get("repo_path")
+            )        
 
     return base
 def get_orchestrator_by_id(repo_id: str):
