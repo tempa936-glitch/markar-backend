@@ -33,17 +33,17 @@ class BaseAgent:
                 graph_context: Dict, model: str = None) -> str:
 
         """
-        LLM ko call karo.
+        Gemini ko call karo.
         graph_context mein Neo4j ka structured data hoga — poora code nahi.
         """
 
-        import anthropic
+        import google.generativeai as genai
 
-        api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        api_key = os.getenv("GEMINI_API_KEY", "")
         if not api_key:
             return self._fallback_response(graph_context)
 
-        client = anthropic.Anthropic(api_key=api_key)
+        genai.configure(api_key=api_key)
 
         # Context banao — sirf structured data, code nahi
         context_text = self._format_context(graph_context)
@@ -58,14 +58,12 @@ class BaseAgent:
 User ka sawaal: {user_message}
 """
         try:
-            response = client.messages.create(
-                model=model or os.getenv("MARKAR_LLM_MODEL", "claude-3-5-haiku-20241022"),
-                max_tokens=1500,
-                messages=[{"role": "user", "content": full_prompt}]
-            )
-            return response.content[0].text
+            model_name = model or os.getenv("MARKAR_LLM_MODEL", "gemini-2.0-flash")
+            gemini_model = genai.GenerativeModel(model_name)
+            response = gemini_model.generate_content(full_prompt)
+            return response.content.text
         except Exception as e:
-            print(f"[LLM] Failed: {e}")
+            print(f"[LLM] Gemini failed: {e}")
             return self._fallback_response(graph_context)
 
     def _format_context(self, ctx: Dict) -> str:

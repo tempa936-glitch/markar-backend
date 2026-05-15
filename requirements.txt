@@ -20,6 +20,7 @@ LangGraph
 OpenAI
 ChromaDB
 neo4j>=5.0.0
+google-generativeai
 
 
 # ── Tree-sitter: Multi-language parsing ───────────────────────────────────────
