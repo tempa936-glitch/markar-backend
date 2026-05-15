@@ -14,10 +14,12 @@ from fastapi.responses import StreamingResponse
 
 from app.services.repo_service import (
     start_initialization,
-    get_status as repo_get_status,    # ← alias do conflict avoid karne ke liye
+    get_status as repo_get_status,
     get_orchestrator_by_id,
     list_all_repos,
-    stream_status
+    stream_status,
+    get_files_page,
+    get_file_detail,
 )
 
 # TWO separate routers — no duplicate
@@ -85,13 +87,46 @@ async def initialize(request: InitRequest):
 
 # ── Status — now returns RICH analysis ────────────────────────
 @ci_router.get("/status/{repo_id}")
-async def repo_status(                    # ← naam badla — conflict nahi hoga
-    repo_id: str,
-):
+async def repo_status(repo_id: str):
     from app.services.repo_service import get_status as _get_status
-    result = _get_status(repo_id)         # ← repo_service wala call hoga
+    result = _get_status(repo_id)
     if not result:
         raise HTTPException(status_code=404, detail=f"Repo {repo_id} not found")
+    return result
+
+
+@ci_router.get("/status/{repo_id}/files")
+async def repo_files(
+    repo_id: str,
+    page:      int = Query(default=1,  ge=1),
+    page_size: int = Query(default=30, ge=1, le=200),
+    risk:      Optional[str] = Query(default=None),
+):
+    """
+    Paginated file list — Files tab ke liye.
+    ?page=1&page_size=30&risk=HIGH
+    """
+    result = get_files_page(repo_id, page=page, page_size=page_size,
+                            risk_filter=risk)
+    if result is None:
+        raise HTTPException(status_code=404,
+                            detail="Repo not found or graph not ready yet")
+    return result
+
+
+@ci_router.get("/status/{repo_id}/file")
+async def repo_file_detail(
+    repo_id:   str,
+    path:      str = Query(..., description="Relative file path, e.g. controllers/user.js"),
+):
+    """
+    Ek file ka poora detail — graph node click pe.
+    ?path=controllers/user.controller.js
+    """
+    result = get_file_detail(repo_id, file_path=path)
+    if result is None:
+        raise HTTPException(status_code=404,
+                            detail="Repo not found or graph not ready")
     return result
 
 @ci_router.get("/stream/{repo_id}")
@@ -190,10 +225,15 @@ async def get_stats(
     orchestrator: CodeIntelligenceOrchestrator = Depends(get_orchestrator)):
     return {"status": "success", "data": orchestrator.get_stats()}
 
-@ci_router.get("/visualization")
-async def get_visualization(
-    orchestrator: CodeIntelligenceOrchestrator = Depends(get_orchestrator)):
-    return {"status": "success", "data": orchestrator.export_visualization()}
+@ci_router.get("/visualization/{repo_id}")
+async def get_visualization(repo_id: str):
+    orch = get_orchestrator_by_id(repo_id)
+    if not orch:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Repo '{repo_id}' not ready. Initialize first."
+        )
+    return {"status": "success", "data": orch.export_visualization()}
 
 @ci_router.post("/workflow/on-code-change")
 async def workflow_on_code_change(request: CodeChangeWorkflowRequest,

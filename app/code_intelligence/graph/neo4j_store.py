@@ -62,7 +62,12 @@ class Neo4jStore:
     def save(self, nodes: Dict[str, DependencyNode]):
         import time
         self.nodes    = nodes
-        self.analyzer = GraphAnalyzer(nodes)
+        self.analyzer = GraphAnalyzer(
+            nodes,
+            repo_path=self.repo_path if hasattr(self, 'repo_path') else "",
+            driver=self._connect(),
+            repo_id=self.repo_id,
+        )
         driver = self._connect()
         self._create_indexes()
 

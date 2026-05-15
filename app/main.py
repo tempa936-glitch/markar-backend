@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes.health import system_router, ci_router
+from app.routes.chat   import chat_router
 
 app = FastAPI(
     title="Markar Intelligence",
@@ -25,3 +26,4 @@ app.add_middleware(
 
 app.include_router(system_router)
 app.include_router(ci_router)
+app.include_router(chat_router)

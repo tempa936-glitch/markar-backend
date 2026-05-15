@@ -18,9 +18,11 @@ HIGH_IMPORT_COUNT   = 3
 
 class GraphAnalyzer:
 
-    def __init__(self, nodes: Dict[str, DependencyNode], repo_path: str = ""):
+    def __init__(self, nodes: Dict[str, DependencyNode], repo_path: str = "",driver=None, repo_id: str = ""):
         self.nodes     = nodes
         self.repo_path = repo_path   # ← NEW: needed to read file sizes
+        self._driver   = driver    # Neo4j driver — queries ke liye
+        self._repo_id  = repo_id 
 
     # ── MAIN: rich_analysis ─────────────────────────────────────────────
     def rich_analysis(self) -> dict:
@@ -128,6 +130,21 @@ class GraphAnalyzer:
 
     # ── Circular deps ────────────────────────────────────────────────────
     def find_circular_dependencies(self) -> List[List[str]]:
+        if self._driver and self._repo_id:
+            try:
+                with self._driver.session() as s:
+                    rows = s.run("""
+                        MATCH path = (a:CodeNode {repo_id:$r})
+                              -[:DEPENDS_ON*2..6]->(a)
+                        WITH [n IN nodes(path) | n.node_id] AS cycle
+                        RETURN DISTINCT cycle
+                        LIMIT 20
+                    """, r=self._repo_id)
+                    return [row["cycle"] for row in rows]
+            except Exception as e:
+                print(f"[Analyzer] Neo4j circular deps failed: {e}, falling back")
+
+        # Fallback — RAM se
         cycles, visited = [], set()
         for node_id in self.nodes:
             if node_id not in visited:
@@ -190,6 +207,45 @@ class GraphAnalyzer:
 
     # ── Standard methods (unchanged) ─────────────────────────────────────
     def get_impact(self, node_id: str) -> Dict:
+        # Neo4j available hai to wahan se query karo
+        if self._driver and self._repo_id:
+            try:
+                with self._driver.session() as s:
+                    # Direct dependents — kaun is node pe depend karta hai
+                    direct = s.run("""
+                        MATCH (caller:CodeNode {repo_id:$r})
+                        -[:DEPENDS_ON]->(n:CodeNode {node_id:$nid, repo_id:$r})
+                        RETURN caller.node_id AS id, caller.name AS name,
+                               caller.node_type AS type, caller.file_path AS file
+                    """, r=self._repo_id, nid=node_id)
+                    direct_list = [dict(row) for row in direct]
+
+                    # All affected — 3 levels tak traverse (blast radius)
+                    all_aff = s.run("""
+                        MATCH (n:CodeNode {node_id:$nid, repo_id:$r})
+                        MATCH path = (caller:CodeNode {repo_id:$r})
+                             -[:DEPENDS_ON*1..3]->(n)
+                        UNWIND nodes(path) AS nd
+                        WITH DISTINCT nd
+                        WHERE nd.node_id <> $nid
+                        RETURN nd.node_id AS id, nd.name AS name,
+                               nd.node_type AS type, nd.file_path AS file
+                        LIMIT 100
+                    """, r=self._repo_id, nid=node_id)
+                    all_list = [dict(row) for row in all_aff]
+
+                    count = len(all_list)
+                    return {
+                        "node":              node_id,
+                        "direct_dependents": direct_list,
+                        "all_affected":      all_list,
+                        "impact_count":      count,
+                        "impact_level":      self._calculate_impact_level(count),
+                    }
+            except Exception as e:
+                print(f"[Analyzer] Neo4j get_impact failed: {e}, falling back to RAM")
+
+        # Fallback — RAM se (Neo4j nahi hai to)
         if node_id not in self.nodes:
             return {}
         node = self.nodes[node_id]
@@ -199,6 +255,41 @@ class GraphAnalyzer:
                 "impact_level": self._calculate_impact_level(len(affected))}
 
     def get_dependencies(self, node_id: str) -> Dict:
+        if self._driver and self._repo_id:
+            try:
+                with self._driver.session() as s:
+                    # Direct dependencies — yeh node kise call/use karta hai
+                    direct = s.run("""
+                        MATCH (n:CodeNode {node_id:$nid, repo_id:$r})
+                              -[:DEPENDS_ON]->(dep:CodeNode {repo_id:$r})
+                        RETURN dep.node_id AS id, dep.name AS name,
+                               dep.node_type AS type, dep.file_path AS file
+                    """, r=self._repo_id, nid=node_id)
+                    direct_list = [dict(row) for row in direct]
+
+                    # All dependencies — 3 levels tak
+                    all_deps = s.run("""
+                        MATCH (n:CodeNode {node_id:$nid, repo_id:$r})
+                        MATCH path = (n)-[:DEPENDS_ON*1..3]->
+                                     (dep:CodeNode {repo_id:$r})
+                        UNWIND nodes(path) AS nd
+                        WITH DISTINCT nd
+                        WHERE nd.node_id <> $nid
+                        RETURN nd.node_id AS id, nd.name AS name,
+                               nd.node_type AS type, nd.file_path AS file
+                        LIMIT 100
+                    """, r=self._repo_id, nid=node_id)
+                    all_list = [dict(row) for row in all_deps]
+
+                    return {
+                        "node":             node_id,
+                        "direct_deps":      direct_list,
+                        "all_deps":         all_list,
+                        "dependency_count": len(all_list),
+                    }
+            except Exception as e:
+                print(f"[Analyzer] Neo4j get_dependencies failed: {e}, falling back to RAM")
+
         if node_id not in self.nodes:
             return {}
         node = self.nodes[node_id]

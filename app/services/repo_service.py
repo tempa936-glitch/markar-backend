@@ -269,20 +269,113 @@ def get_status(repo_id: str) -> Optional[dict]:
         } if job.get("languages_installed") is not None else None,             
     }
 
-    # Graph ready hone ke baad hi deep data add karo
+    # Graph ready hone ke baad sirf SUMMARY add karo — files alag endpoint se aayengi
     if job["graph_ready"] and job.get("orchestrator"):
         store = job["orchestrator"].store
         base["graph_stats"] = store.get_stats()
 
         from app.code_intelligence.graph.neo4j_store import Neo4jStore
         if isinstance(store, Neo4jStore):
-            base["repo_overview"] = store.get_repo_overview()
+            # Sirf summary — files nahi (files /files endpoint se aayengi)
+            base["repo_overview"] = _build_summary_neo4j(store)
         else:
-            base["repo_overview"] = _build_repo_overview(
-                store, job.get("parser"), repo_path=job.get("repo_path")
-            )        
+            base["repo_overview"] = _build_summary_in_memory(store)
 
     return base
+
+
+def _build_summary_neo4j(store) -> dict:
+    """Neo4j se sirf summary counts — fast, koi LIMIT nahi."""
+    try:
+        from app.code_intelligence.graph.neo4j_store import Neo4jStore
+        driver = store._connect()
+        with driver.session() as s:
+            stats = store.get_stats()
+
+            top = s.run("""
+                MATCH (f:CodeNode {repo_id:$r, node_type:'function'})
+                OPTIONAL MATCH ()-[:DEPENDS_ON]->(f)
+                WITH f, count(*) AS dep
+                ORDER BY dep DESC LIMIT 10
+                RETURN f.name AS name, f.file_path AS file,
+                       f.line_no AS line, dep AS dependents
+            """, r=store.repo_id)
+            top_10 = [dict(row) for row in top]
+
+            dead = s.run("""
+                MATCH (f:CodeNode {repo_id:$r, node_type:'function'})
+                WHERE NOT ()-[:DEPENDS_ON]->(f) AND NOT (f)-[:DEPENDS_ON]->()
+                RETURN count(f) AS cnt
+            """, r=store.repo_id).single()["cnt"]
+
+            entry = s.run("""
+                MATCH (f:CodeNode {repo_id:$r, node_type:'function'})
+                WHERE NOT ()-[:DEPENDS_ON]->(f)
+                RETURN count(f) AS cnt
+            """, r=store.repo_id).single()["cnt"]
+
+            risk_counts = s.run("""
+                MATCH (file:CodeNode {repo_id:$r, node_type:'file'})
+                OPTIONAL MATCH (file)-[:DEPENDS_ON]->(fn:CodeNode {node_type:'function'})
+                WITH file, count(DISTINCT fn) AS fc
+                RETURN
+                  sum(CASE WHEN fc > 30 THEN 1 ELSE 0 END) AS critical,
+                  sum(CASE WHEN fc > 15 AND fc <= 30 THEN 1 ELSE 0 END) AS high
+            """, r=store.repo_id).single()
+
+        return {
+            "total_files":        stats.get("files", 0),
+            "total_functions":    stats.get("functions", 0),
+            "total_classes":      stats.get("classes", 0),
+            "dead_code_count":    dead,
+            "entry_points_count": entry,
+            "top_10_most_called": top_10,
+            "files": [],   # ← empty — /files endpoint se lo
+            "issues_summary": {
+                "critical":     risk_counts["critical"] if risk_counts else 0,
+                "high":         risk_counts["high"]     if risk_counts else 0,
+                "total_issues": (risk_counts["critical"] + risk_counts["high"]) if risk_counts else 0,
+            }
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _build_summary_in_memory(store) -> dict:
+    """In-memory store se sirf summary — files nahi."""
+    func_nodes  = {nid: n for nid, n in store.nodes.items() if n.type == "function"}
+    file_nodes  = {nid: n for nid, n in store.nodes.items() if n.type == "file"}
+    class_nodes = {nid: n for nid, n in store.nodes.items() if n.type == "class"}
+
+    all_funcs_sorted = sorted(func_nodes.values(), key=lambda n: -len(n.parents))
+    top_10 = [
+        {"name": n.name, "file": n.file_path, "line": n.line_no,
+         "dependents": len(n.parents), "risk": _func_risk(len(n.parents))}
+        for n in all_funcs_sorted[:10]
+    ]
+    dead  = sum(1 for n in func_nodes.values() if len(n.parents) == 0 and len(n.children) == 0)
+    entry = sum(1 for n in func_nodes.values() if len(n.parents) == 0)
+
+    file_risks = []
+    for fn in file_nodes.values():
+        ff = [n for n in func_nodes.values() if n.file_path == fn.file_path]
+        max_dep = max((len(n.parents) for n in ff), default=0)
+        file_risks.append(_file_risk(len(ff), max_dep))
+
+    return {
+        "total_files":        len(file_nodes),
+        "total_functions":    len(func_nodes),
+        "total_classes":      len(class_nodes),
+        "dead_code_count":    dead,
+        "entry_points_count": entry,
+        "top_10_most_called": top_10,
+        "files": [],  # ← empty — /files endpoint se lo
+        "issues_summary": {
+            "critical":     file_risks.count("CRITICAL"),
+            "high":         file_risks.count("HIGH"),
+            "total_issues": file_risks.count("CRITICAL") + file_risks.count("HIGH"),
+        }
+    }
 def get_orchestrator_by_id(repo_id: str):
     job = _jobs.get(repo_id)
     if not job or not job["graph_ready"]:
@@ -540,3 +633,140 @@ async def stream_status(repo_id: str) -> AsyncGenerator[str, None]:
             break
 
         await asyncio.sleep(1)
+
+
+def get_files_page(repo_id: str, page: int = 1, page_size: int = 30,
+                   risk_filter: str = None) -> Optional[dict]:
+    """
+    Paginated files list — dashboard Files tab ke liye.
+    Har page mein page_size files aayengi.
+    """
+    job = _jobs.get(repo_id)
+    if not job or not job["graph_ready"]:
+        return None
+
+    store = job["orchestrator"].store
+
+    from app.code_intelligence.graph.neo4j_store import Neo4jStore
+    if isinstance(store, Neo4jStore):
+        return store.get_files_page(page=page, page_size=page_size,
+                                    risk_filter=risk_filter)
+    else:
+        # In-memory store ke liye
+        return _files_page_in_memory(store, job.get("repo_path"),
+                                     page, page_size, risk_filter)
+
+
+def get_file_detail(repo_id: str, file_path: str) -> Optional[dict]:
+    """
+    Ek file ka poora detail — graph pe click karne par.
+    Functions, classes, called_by, calls sab aata hai.
+    """
+    job = _jobs.get(repo_id)
+    if not job or not job["graph_ready"]:
+        return None
+
+    store = job["orchestrator"].store
+
+    from app.code_intelligence.graph.neo4j_store import Neo4jStore
+    if isinstance(store, Neo4jStore):
+        return store.get_file_detail(file_path)
+    else:
+        return _file_detail_in_memory(store, job.get("repo_path"), file_path)
+
+
+def _files_page_in_memory(store, repo_path, page, page_size, risk_filter) -> dict:
+    """In-memory store ke liye paginated files."""
+    def _norm(p): return p.replace("\\", "/").lower().strip().lstrip("/")
+
+    file_nodes  = {nid: n for nid, n in store.nodes.items() if n.type == "file"}
+    func_nodes  = {nid: n for nid, n in store.nodes.items() if n.type == "function"}
+    class_nodes = {nid: n for nid, n in store.nodes.items() if n.type == "class"}
+
+    all_files = []
+    for fid, fnode in file_nodes.items():
+        ff = [n for n in func_nodes.values()  if _norm(n.file_path) == _norm(fnode.file_path)]
+        fc = [n for n in class_nodes.values() if _norm(n.file_path) == _norm(fnode.file_path)]
+        max_dep = max((len(n.parents) for n in ff), default=0)
+        risk = _file_risk(len(ff), max_dep)
+
+        if risk_filter and risk != risk_filter.upper():
+            continue
+
+        try:
+            abs_path = os.path.join(repo_path, fnode.file_path.replace("\\", "/")) if repo_path else fnode.file_path
+            total_lines = len(Path(abs_path).read_text(errors="ignore").splitlines())
+        except:
+            total_lines = 0
+
+        all_files.append({
+            "file":           fnode.file_path,
+            "total_lines":    total_lines,
+            "function_count": len(ff),
+            "class_count":    len(fc),
+            "max_dependents": max_dep,
+            "risk":           risk,
+        })
+
+    risk_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "ISOLATED": 4}
+    all_files.sort(key=lambda x: risk_order.get(x["risk"], 5))
+
+    total = len(all_files)
+    start = (page - 1) * page_size
+    end   = start + page_size
+
+    return {
+        "page":        page,
+        "page_size":   page_size,
+        "total_files": total,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
+        "files":       all_files[start:end],
+    }
+
+
+def _file_detail_in_memory(store, repo_path, file_path) -> dict:
+    """In-memory store se ek file ka poora detail."""
+    def _norm(p): return p.replace("\\", "/").lower().strip().lstrip("/")
+
+    func_nodes  = {nid: n for nid, n in store.nodes.items() if n.type == "function"}
+    class_nodes = {nid: n for nid, n in store.nodes.items() if n.type == "class"}
+
+    file_funcs   = [n for n in func_nodes.values()  if _norm(n.file_path) == _norm(file_path)]
+    file_classes = [n for n in class_nodes.values() if _norm(n.file_path) == _norm(file_path)]
+
+    functions = []
+    for fn in file_funcs:
+        dep = len(fn.parents)
+        called_by = [{"name": store.nodes[p].name, "file": store.nodes[p].file_path}
+                     for p in fn.parents if p in store.nodes][:10]
+        calls     = [{"name": store.nodes[c].name, "file": store.nodes[c].file_path}
+                     for c in fn.children if c in store.nodes][:10]
+        functions.append({
+            "name":        fn.name,
+            "line":        fn.line_no,
+            "dependents":  dep,
+            "risk":        _func_risk(dep),
+            "called_by":   called_by,
+            "calls":       calls,
+            "is_dead_code": dep == 0 and len(fn.children) == 0,
+        })
+    functions.sort(key=lambda x: -x["dependents"])
+
+    classes = []
+    for cn in file_classes:
+        methods = [{"name": store.nodes[m].name.split(".")[-1], "line": store.nodes[m].line_no}
+                   for m in cn.children if m in store.nodes]
+        classes.append({"name": cn.name, "line": cn.line_no, "methods": methods})
+
+    try:
+        abs_path = os.path.join(repo_path, file_path.replace("\\", "/")) if repo_path else file_path
+        total_lines = len(Path(abs_path).read_text(errors="ignore").splitlines())
+    except:
+        total_lines = 0
+
+    return {
+        "file":        file_path,
+        "total_lines": total_lines,
+        "functions":   functions,
+        "classes":     classes,
+    }
