@@ -32,24 +32,15 @@ class BaseAgent:
     def ask_llm(self, system_prompt: str, user_message: str,
                 graph_context: Dict, model: str = None) -> str:
 
-        """
-        Gemini ko call karo.
-        graph_context mein Neo4j ka structured data hoga — poora code nahi.
-        """
+        import requests
 
-        import google.generativeai as genai
-
-        api_key = os.getenv("GEMINI_API_KEY", "")
+        api_key = os.getenv("OPENROUTER_API_KEY", "")
         if not api_key:
             return self._fallback_response(graph_context)
 
-        genai.configure(api_key=api_key)
-
-        # Context banao — sirf structured data, code nahi
         context_text = self._format_context(graph_context)
 
-        full_prompt = f"""
-{system_prompt}
+        full_prompt = f"""{system_prompt}
 
 === CODEBASE KNOWLEDGE GRAPH DATA ===
 {context_text}
@@ -57,14 +48,41 @@ class BaseAgent:
 
 User ka sawaal: {user_message}
 """
+        selected_model = model or os.getenv(
+            "MARKAR_LLM_MODEL",
+            "openrouter/free"
+        )
+
         try:
-            model_name = model or os.getenv("MARKAR_LLM_MODEL", "gemini-2.0-flash")
-            gemini_model = genai.GenerativeModel(model_name)
-            response = gemini_model.generate_content(full_prompt)
-            return response.content.text
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://markarai.netlify.app",
+                    "X-Title": "Markar.ai",
+                }
+                ,
+                json={
+                    "model": selected_model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": full_prompt}
+                    ],
+                    "max_tokens": 2048,
+                    "temperature": 0.2,
+                }
+           )
+            data = response.json()
+            if response.status_code != 200:
+                print(f"[LLM] OpenRouter error: {data}")
+                return self._fallback_response(graph_context)
+            text = data["choices"][0]["message"]["content"]
+            print(f"[LLM] Success — {selected_model}")
+            return text
         except Exception as e:
-            print(f"[LLM] Gemini failed: {e}")
-            return self._fallback_response(graph_context)
+            print(f"[LLM] Request failed: {e}")
+            return self._fallback_response(graph_context)              
 
     def _format_context(self, ctx: Dict) -> str:
         """Graph data ko readable text mein convert karo."""

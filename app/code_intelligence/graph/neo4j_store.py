@@ -205,6 +205,9 @@ class Neo4jStore:
                 # Per-file breakdown (paginated — pehle 50)
                 files_q = s.run("""
                     MATCH (file:CodeNode {repo_id:$r, node_type:'file'})
+                    WHERE NOT file.file_path CONTAINS 'test'
+                      AND NOT file.file_path CONTAINS 'spec'
+                      AND NOT file.file_path CONTAINS 'conftest'
                     OPTIONAL MATCH (file)-[:DEPENDS_ON]->(fn:CodeNode {node_type:'function'})
                     OPTIONAL MATCH (file)-[:DEPENDS_ON]->(cls:CodeNode {node_type:'class'})
                     OPTIONAL MATCH ()-[:DEPENDS_ON]->(file)
