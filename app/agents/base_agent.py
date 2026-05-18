@@ -11,6 +11,7 @@ BaseAgent — Production-Grade Upgrade.
 """
 import os
 import asyncio
+import concurrent.futures          # ← yeh add karo
 from typing import Dict, List, Optional, AsyncGenerator, Any
 from pydantic import BaseModel
 
@@ -95,11 +96,9 @@ class BaseAgent:
         )
 
         try:
-            loop = asyncio.new_event_loop()
-            try:
-                return loop.run_until_complete(coro)
-            finally:
-               loop.close()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(asyncio.run, coro)
+                return future.result(timeout=120)
         except Exception as e:
             print(f"[{self.__class__.__name__}] ask_llm failed: {e}")
             return self._fallback_response(graph_context)
@@ -176,6 +175,8 @@ class BaseAgent:
                     raise ValueError(f"LLM API error {response.status_code}: {data}")
 
                 text = data["choices"][0]["message"]["content"]
+                if not text:
+                    return self._fallback_response(graph_context)
                 print(f"[LLM] OK — model={selected_model} attempt={attempt+1}")
                 return text
 
@@ -224,7 +225,10 @@ class BaseAgent:
             full_user_content += f"=== CODEBASE KNOWLEDGE GRAPH ===\n{context_text}\n=================================\n\n"
         full_user_content += f"User: {user_message}"
 
-        selected_model = model or os.getenv("MARKAR_LLM_MODEL", "mistralai/mistral-7b-instruct:free")
+        _env_model = os.getenv("MARKAR_LLM_MODEL", "openrouter/free")
+        selected_model = model or _env_model
+        if selected_model == "openrouter/free":
+            selected_model = "meta-llama/llama-3.3-70b-instruct:free"
 
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:

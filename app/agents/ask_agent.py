@@ -78,34 +78,34 @@ Rules:
                 continue
 
         # Functions search
-        funcs = self.query("""
-            MATCH (f:CodeNode {repo_id:$r, node_type:'function'})
-            WHERE toLower(f.name) CONTAINS toLower($kw)
-               OR toLower(f.file_path) CONTAINS toLower($kw)
-            RETURN f.node_id AS id, f.name AS name,
-                   f.file_path AS file, f.line_no AS line
-            LIMIT 10
-        """, kw=kw)
+            funcs = self.query("""
+               MATCH (f:CodeNode {repo_id:$r, node_type:'function'})
+               WHERE toLower(f.name) CONTAINS toLower($kw)
+                  OR toLower(f.file_path) CONTAINS toLower($kw)
+                RETURN f.node_id AS id, f.name AS name,
+                       f.file_path AS file, f.line_no AS line
+                LIMIT 10
+            """, kw=kw)
 
-        for fn in funcs:
-            if fn["id"] not in seen_ids:
-                all_funcs.append(fn)
-                seen_ids.add(fn["id"])
+            for fn in funcs:
+                if fn["id"] not in seen_ids:
+                    all_funcs.append(fn)
+                    seen_ids.add(fn["id"])
 
-        # Files search
-        files = self.query("""
-            MATCH (f:CodeNode {repo_id:$r, node_type:'file'})
-            WHERE toLower(f.file_path) CONTAINS toLower($kw)
-               OR toLower(f.name)      CONTAINS toLower($kw)
-            RETURN f.node_id AS id, f.name AS name,
-                   f.file_path AS file
-            LIMIT 10
-        """, kw=kw)
+            # Files search
+            files = self.query("""
+                MATCH (f:CodeNode {repo_id:$r, node_type:'file'})
+                WHERE toLower(f.file_path) CONTAINS toLower($kw)
+                   OR toLower(f.name)      CONTAINS toLower($kw)
+                RETURN f.node_id AS id, f.name AS name,
+                       f.file_path AS file
+                LIMIT 10
+            """, kw=kw)
 
-        for fl in files:
-            if fl["id"] not in seen_ids:
-                all_files.append(fl)
-                seen_ids.add(fl["id"])
+            for fl in files:
+                if fl["id"] not in seen_ids:
+                   all_files.append(fl)
+                   seen_ids.add(fl["id"])
 
 
         # Pehle function mila to uske connections bhi nikalo

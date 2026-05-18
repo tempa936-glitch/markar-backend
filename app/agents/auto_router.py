@@ -115,7 +115,10 @@ Respond ONLY with valid JSON, no markdown, no explanation:
             if response.status_code != 200:
                 return None
 
-            raw  = data["choices"][0]["message"]["content"].strip()
+            content = data["choices"][0]["message"].get("content") or ""
+            raw = content.strip()
+            if not raw:
+                return None
             # Strip markdown code fences if present
             if raw.startswith("```"):
                 raw = raw.strip("`").strip()
