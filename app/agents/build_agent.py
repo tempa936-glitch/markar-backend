@@ -75,8 +75,9 @@ Questions short rakho. JSON array mein do:
 Sirf JSON array do.
 """
 
-    def __init__(self, store, repo_id: str):
-        super().__init__(store, repo_id)
+    def __init__(self, store, repo_id: str = "", session_id: str = None,
+             conv_store=None, tool_registry=None):
+        super().__init__(store, repo_id, session_id, conv_store, tool_registry)
         # Build session state — multi-step conversation
         self._sessions: Dict[str, Dict] = {}
 

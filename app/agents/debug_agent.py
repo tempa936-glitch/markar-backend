@@ -52,11 +52,19 @@ RESPONSE FORMAT — yeh sab sections ZAROOR do, detail mein:
 
 RULES:
 - Kabhi sirf ek line mein mat chhodna
-- Agar graph mein data kam hai — file ke naam se purpose samjho aur relevant advice do
+- **STRICT GROUNDING: Sirf wahi batao jo graph data mein actually present hai.**
+  Agar graph mein kisi function ka naam nahi hai, toh uska naam mat bolo.
+  Agar line number nahi hai, toh "line X" mat likho.
+  Functions ya bugs INVENT KARNA STRICTLY FORBIDDEN HAI.
+- Agar graph data mein sirf limited info hai (e.g. sirf file path aur risk level),
+  toh wahi batao — honestly likho "Graph mein is file ka detailed function data
+  available nahi hai, yeh info available hai: [jo bhi hai]"
+- Graph data mein jo "all_functions" list hai — WAHI functions mention karo, koi aur nahi
+- Graph data mein jo "all_classes" list hai — WAHI classes mention karo, koi aur nahi
 - Risk level CRITICAL/HIGH ho toh extra detail do
 - Same file mein function define aur use hona NORMAL hai — circular dependency mat bolna
 - circular_deps list empty ho toh "No circular dependencies" likho
-- Hamesha actionable recommendations do
+- Hamesha actionable recommendations do sirf real data ke basis pe
 - Risk levels: CRITICAL > HIGH > MEDIUM > LOW — inhe exactly as-is use karo, rename mat karo
 - Test files (test_*.py, *_test.py, conftest.py) ko CRITICAL mat bolna — yeh normal test code hai
 - CRITICAL sirf tab hota hai jab production code file pe 30+ nodes depend karti hon
@@ -77,6 +85,9 @@ RULES:
 
         graph_data = self._collect_debug_data(target)
 
+        # ── Graph data empty hai? Real file content padhke supplement karo ──
+        graph_data = self._enrich_with_file_content(graph_data, target)
+
         answer = self.ask_llm(
             system_prompt=self.SYSTEM_PROMPT,
             user_message=user_message,
@@ -91,6 +102,108 @@ RULES:
             "agent":      "debug",
         }
 
+    def _enrich_with_file_content(self, graph_data: Dict, target: str) -> Dict:
+        """
+        Agar graph mein functions/classes nahi mile toh actual file padhke
+        real data inject karo — taaki LLM hallucinate na kare.
+        """
+        import ast, os, re
+
+        # Graph mein meaningful data hai? Check karo
+        has_functions = bool(graph_data.get("all_functions"))
+        has_error     = "error" in graph_data
+
+        file_path = graph_data.get("file_path", "")
+
+        # File path nahi mila toh target se dhundho
+        if not file_path and not has_error:
+            file_path = target if target.endswith(".py") else ""
+
+        if not file_path:
+            # Repo root se dhundhne ki koshish karo
+            repo_root = os.getenv("MARKAR_REPO_PATH", "")
+            if repo_root:
+                for root, _, files in os.walk(repo_root):
+                    for f in files:
+                        if f == target or f == f"{target}.py":
+                            file_path = os.path.join(root, f)
+                            break
+
+        if not file_path or not os.path.isfile(file_path):
+            # File nahi mili — graph data jo hai wahi use karo
+            # LLM ko clearly batao ki file content available nahi
+            if not has_functions:
+                graph_data["_content_note"] = (
+                    "File content disk pe available nahi hai aur graph mein "
+                    "bhi detailed function list nahi hai. Sirf graph metadata "
+                    "ke basis pe analysis karo. Functions invent mat karo."
+                )
+            return graph_data
+
+        # ── File padhke real functions/classes extract karo ──────────────
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as fh:
+                source = fh.read()
+
+            tree = ast.parse(source)
+
+            real_functions = []
+            real_classes   = []
+
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    real_functions.append({
+                        "name": node.name,
+                        "line": node.lineno,
+                        "args": [a.arg for a in node.args.args],
+                    })
+                elif isinstance(node, ast.ClassDef):
+                    methods = [
+                        n.name for n in ast.walk(node)
+                        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    ]
+                    real_classes.append({
+                        "name":    node.name,
+                        "line":    node.lineno,
+                        "methods": methods,
+                    })
+
+            # Graph data mein real info inject karo
+            graph_data["_source_extracted"]       = True
+            graph_data["real_functions_from_file"] = real_functions
+            graph_data["real_classes_from_file"]   = real_classes
+            graph_data["total_lines"]              = source.count("\n") + 1
+
+            # Agar graph functions empty tha toh real se fill karo
+            if not has_functions:
+                graph_data["all_functions"] = [
+                    {"name": f["name"], "line": f["line"], "dependents": 0}
+                    for f in real_functions
+                ]
+                graph_data["all_classes"] = [
+                    {"name": c["name"], "line": c["line"]}
+                    for c in real_classes
+                ]
+                graph_data["_content_note"] = (
+                    "Graph mein function details nahi the — "
+                    "actual file parse karke real functions/classes inject kiye hain. "
+                    "Sirf yahi functions exist karte hain, koi aur nahi."
+                )
+
+            # Source ka summarized snippet bhi do (first 3000 chars)
+            graph_data["file_source_preview"] = source[:3000]
+
+        except SyntaxError as e:
+            graph_data["_parse_error"] = f"File parse nahi hui: {e}"
+            graph_data["_content_note"] = (
+                "File mein syntax error hai ya parse nahi hui. "
+                "Sirf graph data ke basis pe analysis karo."
+            )
+        except Exception as e:
+            graph_data["_content_note"] = f"File read failed: {e}. Graph data use karo."
+
+        return graph_data
+
     def _find_target(self, message: str) -> str:
         import re
 
@@ -101,18 +214,33 @@ RULES:
         if file_match:
             return file_match.group(0)
 
-        # Priority 2 — agent/module name (build_agent, debug_agent etc)
+        # Priority 2 — agent/module name sirf tab match karo jab clearly
+        # TARGET ho — trigger word nearby ho (within 30 chars)
+        msg_lower = message.lower()
+        debug_trigger_words = {
+            "debug", "check", "dekho", "analyze", "batao",
+            "kyun", "error", "issue", "problem", "fix", "karo"
+        }
         agent_match = re.search(
             r'\b(\w+_agent|\w+_store|\w+_router|\w+_service|\w+_manager)\b',
             message, re.IGNORECASE
         )
         if agent_match:
-            return agent_match.group(1)
+            matched_word = agent_match.group(1).lower()
+            pos = msg_lower.find(matched_word)
+            nearby = msg_lower[max(0, pos - 30):pos + len(matched_word) + 30]
+            if any(tw in nearby for tw in debug_trigger_words):
+                return agent_match.group(1)
 
         # Priority 3 — meaningful words (stop words hata ke)
-        stop = {"koi","bug","hay","hai","mein","kya","check","karo",
-                "dekho","is","the","a","an","in","find","show","any",
-                "there","file","function","code","error","issue","problem"}
+        stop = {
+            "koi", "bug", "hay", "hai", "mein", "kya", "check", "karo",
+            "dekho", "is", "the", "a", "an", "in", "find", "show", "any",
+            "there", "file", "function", "code", "error", "issue", "problem",
+            "debug", "agent", "store", "router", "service", "manager",
+            "wala", "wali", "uska", "iska", "yeh", "yah", "aur", "bhi",
+            "kaise", "kyun", "kuch", "sab", "sirf", "pura", "poora",
+        }
         words = [w.lower() for w in message.split()
                  if w.lower() not in stop and len(w) > 3]
 
