@@ -2,7 +2,7 @@
 Ask Agent — "X feature kahan hai", "Y function kya karta hai"
 Neo4j se dhundho, LLM se explain karo.
 """
-
+from typing import Dict
 from .base_agent import BaseAgent
 
 class AskAgent(BaseAgent):
