@@ -14,7 +14,7 @@ import asyncio
 import concurrent.futures          # ← yeh add karo
 from typing import Dict, List, Optional, AsyncGenerator, Any
 from pydantic import BaseModel
-
+from app.core.response_formatter import ResponseFormatter
 
 # ── Pydantic schemas ────────────────────────────────────────────────────────
 
@@ -175,6 +175,7 @@ class BaseAgent:
                     raise ValueError(f"LLM API error {response.status_code}: {data}")
 
                 text = data["choices"][0]["message"]["content"]
+                text = ResponseFormatter.clean(text)
                 if not text:
                     return self._fallback_response(graph_context)
                 print(f"[LLM] OK — model={selected_model} attempt={attempt+1}")
@@ -262,6 +263,7 @@ class BaseAgent:
                         try:
                             data  = json.loads(raw)
                             delta = data["choices"][0]["delta"].get("content", "")
+                            delta = ResponseFormatter.clean(delta)
                             if delta:
                                 yield StreamChunk(content=delta, done=False)
                         except Exception:
@@ -287,17 +289,31 @@ class BaseAgent:
         if len(response) < 100:
             return response
 
-        reflection_prompt = f"""Tu ek strict code review critic hai.
+        reflection_prompt = f"""You are improving an AI code analysis response.
 User QUESTION: {user_message}
-RESPONSE (first 1200 chars): {response[:1200]}
+RESPONSE (first 800 chars): {response[:800]}
 
-Check karo:
-1. Sawaal ka seedha jawab hai? (Y/N)
-2. File path ya function references hain jahan relevant ho? (Y/N)
-3. Actionable ya clear explanation hai? (Y/N)
+IMPORTANT:
+- Never shorten the response
+- Preserve all technical details
+- Preserve file names
+- Preserve counts
 
-Agar ADEQUATE (saare Y): sirf "OK" likho — kuch aur mat likho.
-Agar INADEQUATE: improved version do (seedha, no preamble)."""
+STRICT RULES:
+- NEVER shorten the response
+- NEVER summarize aggressively
+- NEVER remove files
+- NEVER remove counts
+- NEVER remove technical details
+- NEVER remove architecture insights
+- Keep the answer detailed and structured
+- Preserve markdown formatting
+TASK:
+Return a polished improved version of the SAME response.
+
+If the response is already strong,
+return it with minimal edits.
+"""
 
         try:
             critique = self.ask_llm(
@@ -311,6 +327,15 @@ Agar INADEQUATE: improved version do (seedha, no preamble)."""
             )
             if critique.strip().upper().startswith("OK"):
                 return response
+            # Agar improved response bahut chhota ho to original rakho
+            if len(critique) < len(response) * 0.7:
+                return response
+            
+            critique = critique.replace("INADEQUATE", "")
+            critique = critique.replace("Improved version:", "").strip()
+            if len(critique)  < len(response) * 0.7:
+                return response
+            
             return critique
         except Exception:
             return response

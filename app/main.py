@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routes.health import system_router, ci_router
 from app.routes.chat   import chat_router
 from app.routes.admin  import admin_router
+from app.routes.auth   import auth_router
 
 app = FastAPI(
     title="Markar Intelligence",
@@ -36,6 +37,7 @@ app.include_router(system_router)
 app.include_router(ci_router)
 app.include_router(chat_router)
 app.include_router(admin_router)
+app.include_router(auth_router)
 
 
 @app.on_event("startup")
@@ -46,13 +48,14 @@ async def startup():
     init_db()
     print("[Markar] Phase 1 — Conversation DB initialized")
 
-    # Phase 3: Observability + Multi-repo
+    # Phase 3: Observability + Multi-repo + Auth
     from app.core.observability import init_observability_db
     from app.core.multi_repo import init_repo_db
-    from app.core.auth import Role
+    from app.core.auth import init_auth_db
     init_observability_db()
     init_repo_db()
-    print("[Markar] Phase 3 — Observability + Multi-repo initialized")
+    init_auth_db()
+    print("[Markar] Phase 3 — Observability + Multi-repo + Auth initialized")
 
     # Phase 4: Vector memory + Custom agents + Incremental graph
     from app.core.vector_memory import init_vector_db

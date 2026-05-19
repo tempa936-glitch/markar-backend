@@ -27,7 +27,7 @@ IGNORE_DIRS = {
     ".next", "target", "vendor"
 }
 
-def start_initialization(git_url=None, repo_path=None) -> dict:
+def start_initialization(git_url=None, repo_path=None, git_branch="main") -> dict:
     
     # Deterministic repo_id — same URL = same ID
     clone_path = None
@@ -43,6 +43,7 @@ def start_initialization(git_url=None, repo_path=None) -> dict:
     _jobs[repo_id] = {
         "repo_id": repo_id,
         "git_url": git_url,
+        "git_branch": git_branch,
         "repo_path": repo_path or clone_path,
         "clone_path": clone_path,
         "status": "CLONING" if git_url else "PARSING",
@@ -100,10 +101,13 @@ def _worker(repo_id: str):
             # Windows fix: read-only files (git objects) ko force delete karo
             if job["clone_path"] and os.path.exists(job["clone_path"]):
                 _force_rmtree(job["clone_path"])
+            clone_args = ["git", "clone", "--depth", "1"]
+            if job.get("git_branch"):
+                clone_args += ["--branch", job["git_branch"]]
+            clone_args += [job["git_url"], job["clone_path"]]
             result = subprocess.run(
-                ["git", "clone", "--depth", "1",
-                 job["git_url"], job["clone_path"]],
-                capture_output=True, text=True, timeout=120
+                clone_args,
+                capture_output=True, text=True, timeout=800
             )
             if result.returncode != 0:
                 raise Exception(f"Clone failed: {result.stderr.strip()}")

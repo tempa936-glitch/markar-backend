@@ -80,7 +80,8 @@ async def initialize(request: InitRequest):
     """Initialize from local path OR GitHub URL — non-blocking."""
     result = start_initialization(
         git_url=request.git_url,
-        repo_path=request.repo_path
+        repo_path=request.repo_path,
+        git_branch=request.git_branch,
     )
     return result
 

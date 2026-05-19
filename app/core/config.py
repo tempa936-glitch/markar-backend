@@ -2,6 +2,7 @@
 
 from pydantic_settings import BaseSettings
 from pathlib import Path
+from typing import Optional
 
 
 class Settings(BaseSettings):
@@ -15,6 +16,10 @@ class Settings(BaseSettings):
 
     # CORS
     allowed_origins: list[str] = ["*"]
+
+    # GitHub OAuth (set these in your .env or environment)
+    github_client_id: Optional[str] = None
+    github_client_secret: Optional[str] = None
 
     class Config:
         env_file = ".env"
