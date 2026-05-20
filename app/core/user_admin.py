@@ -382,3 +382,14 @@ def check_repo_limit(user_id: str) -> Dict[str, Any]:
         "max":      limits["max_repos"],
         "plan":     limits["plan"],
     }
+
+SIGNUP_FREE_CREDITS = int(os.getenv("MARKAR_SIGNUP_CREDITS", "30"))
+
+def grant_signup_credits(user_id: str) -> Dict[str, Any]:
+    # Sirf naye users ko — already credits hain toh skip
+    existing = get_user_credits(user_id)
+    if existing.get("credits", 0) > 0 or existing.get("unlimited", 0):
+        return existing
+    result = add_credits(user_id, SIGNUP_FREE_CREDITS, "signup_bonus", "system")
+    print(f"[Auth] New user signup — {SIGNUP_FREE_CREDITS} credits granted: {user_id}")
+    return result

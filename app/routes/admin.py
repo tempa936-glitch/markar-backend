@@ -53,9 +53,9 @@ async def _require_admin(authorization: Optional[str]) -> "TokenPayload":  # noq
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TokenRequest(BaseModel):
-    user_id: str
-    repo_id: str
-    role:    str = "viewer"
+    user_id: str = "admin"
+    repo_id: str = "*"
+    role:    str = "admin"
     secret:  str
 
 

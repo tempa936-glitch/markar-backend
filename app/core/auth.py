@@ -245,6 +245,14 @@ def create_user(
                 now,
             ),
         )
+
+    # Naye user ko signup credits grant karo
+    try:
+        from app.core.user_admin import grant_signup_credits
+        grant_signup_credits(user_id)
+    except Exception as e:
+        print(f"[Auth] Warning: signup credits grant failed for {user_id}: {e}")
+            
     return get_user_by_id(user_id)
 
 
