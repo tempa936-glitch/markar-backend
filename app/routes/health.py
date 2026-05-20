@@ -76,13 +76,38 @@ class CodeReviewWorkflowRequest(BaseModel):
 
 # ── Initialize — local path OR git URL ────────────────────────
 @ci_router.post("/initialize")
-async def initialize(request: InitRequest):
+async def initialize(
+    request: InitRequest,
+    authorization: Optional[str] = None,
+):
     """Initialize from local path OR GitHub URL — non-blocking."""
+    # Auth — user_id nikalo (agar available ho)
+    user_id = None
+    try:
+        from app.core.auth import get_current_user
+        user = await get_current_user(authorization)
+        if user:
+            user_id = user.user_id
+    except Exception:
+        pass
+
     result = start_initialization(
-        git_url=request.git_url,
-        repo_path=request.repo_path,
-        git_branch=request.git_branch,
+        git_url    = request.git_url,
+        repo_path  = request.repo_path,
+        git_branch = request.git_branch,
+        user_id    = user_id,
     )
+
+    # Tier info add karo response mein (file count baad mein OVERVIEW_READY pe milega)
+    from app.core.user_admin import REPO_TIERS
+    result["tier_info"] = {
+        "tiers": [
+            {"name": t["name"], "max_files": t["max_files"],
+             "cost": t["cost"], "blocked": t["blocked"]}
+            for t in REPO_TIERS
+        ],
+        "note": "Tier OVERVIEW_READY ke baad confirm hoga — file count ke baad.",
+    }
     return result
 
 

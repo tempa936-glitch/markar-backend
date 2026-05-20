@@ -250,10 +250,108 @@ def _force_rmtree(path: str):
     shutil.rmtree(path, onerror=_on_error)
 
 
+def _github_precheck(git_url: str, user_id: str) -> dict:
+    """
+    Clone se PEHLE GitHub API se file count estimate karo.
+    Sirf github.com URLs ke liye — baaki skip.
+
+    Returns:
+        {"blocked": False}  — proceed karo
+        {"blocked": True, "reason": "...", "message": "..."}  — mat karo
+    """
+    import re, urllib.request, json as _json
+
+    if not git_url or "github.com" not in git_url:
+        return {"blocked": False}  # Non-GitHub repos — skip check
+
+    # URL se owner/repo nikalo
+    match = re.search(r"github\.com[/:]([^/]+)/([^/\.]+)", git_url)
+    if not match:
+        return {"blocked": False}
+
+    owner, repo = match.group(1), match.group(2)
+
+    try:
+        api_url = f"https://api.github.com/repos/{owner}/{repo}"
+        req = urllib.request.Request(
+            api_url,
+            headers={"User-Agent": "Markar-App", "Accept": "application/vnd.github.v3+json"}
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = _json.loads(resp.read())
+
+        # GitHub size kilobytes mein deta hai
+        size_kb = data.get("size", 0)
+
+        # Size → estimated file count (rough: 1 KB ≈ 0.5 files, capped)
+        # Zyada accurate: HUGE repos usually >500MB
+        estimated_files = size_kb // 2
+
+        print(f"[PRECHECK] {owner}/{repo} → size={size_kb}KB, "
+              f"estimated_files≈{estimated_files}")
+
+        # HUGE check — 1500+ files ya 300MB+
+        if size_kb > 300_000 or estimated_files >= 1500:
+            return {
+                "blocked": True,
+                "reason": "HUGE_REPO_BLOCKED",
+                "message": (
+                    f"Repo '{owner}/{repo}' bohot badi hai "
+                    f"(~{size_kb//1024}MB, ~{estimated_files:,} files estimated). "
+                    f"1500+ files wali repos free plan mein index nahi ho sakti. "
+                    f"Clone shuru hi nahi hoga."
+                ),
+                "estimated_files": estimated_files,
+                "size_kb": size_kb,
+            }
+
+        # Credit check bhi yahan karo agar user_id available hai
+        if user_id:
+            from app.core.user_admin import check_repo_credit
+            credit_result = check_repo_credit(user_id, estimated_files)
+            if not credit_result["allowed"]:
+                return {
+                    "blocked":     True,
+                    "reason":      credit_result.get("reason"),
+                    "message":     credit_result.get("message"),
+                    "estimated_files": estimated_files,
+                    "size_kb":     size_kb,
+                    "required":    credit_result.get("required"),
+                    "available":   credit_result.get("available"),
+                }
+
+        return {
+            "blocked":         False,
+            "estimated_files": estimated_files,
+            "size_kb":         size_kb,
+        }
+
+    except Exception as e:
+        print(f"[PRECHECK] GitHub API failed ({e}) — proceeding without pre-check")
+        return {"blocked": False}  # API fail ho toh clone hone do
+
+
 def _worker(repo_id: str):
     job = _jobs[repo_id]
     
     try:
+        # ── Stage 0: GitHub Pre-Check (CLONE SE PEHLE) ──────
+        if job["git_url"]:
+            job["status"] = "PRECHECKING"
+            precheck = _github_precheck(job["git_url"], job.get("user_id"))
+            if precheck["blocked"]:
+                job["status"]         = "BLOCKED"
+                job["error"]          = precheck["message"]
+                job["blocked_reason"] = precheck["reason"]
+                job["overview"]       = {
+                    "estimated_files": precheck.get("estimated_files"),
+                    "size_kb":         precheck.get("size_kb"),
+                }
+                print(f"[PRECHECK] ❌ BLOCKED before clone — {precheck['reason']}")
+                return  # Clone shuru hi nahi hoga ✅
+
+            print(f"[PRECHECK] ✅ Passed — proceeding to clone")
+
         # ── Stage 1: Clone (agar git_url hai) ──────────────
         if job["git_url"]:
             job["status"] = "CLONING"
@@ -323,6 +421,15 @@ def _worker(repo_id: str):
                     overview=job.get("overview"),
                 )
                 print(f"[STAGE4] Repo saved for user: {job['user_id']}")
+
+                # ✅ READY hone ke BAAD hi credit deduct karo
+                # Agar parse/clone fail ho toh credit nahi katega
+                from app.core.user_admin import deduct_repo_credit
+                total_files = job.get("overview", {}).get("total_files", 0)
+                deduct_result = deduct_repo_credit(job["user_id"], total_files, repo_id)
+                job["credits_deducted"] = deduct_result.get("deducted", 0)
+                print(f"[CREDIT] ✅ Deducted {deduct_result.get('deducted')} credits "
+                      f"| tier={deduct_result.get('tier')} | user={job['user_id']}")
 
         except Exception as stage4_error:
             import traceback

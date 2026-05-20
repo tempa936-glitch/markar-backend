@@ -88,13 +88,20 @@ async def chat(
     user = await _get_user(authorization)
     orch = _get_orch(req.repo_id)
 
+    # ✅ Credit check — RBAC se PEHLE
+    from app.core.user_admin import has_credits, deduct_credit
+    if not has_credits(user.user_id):
+        raise HTTPException(
+            status_code=402,
+            detail="Credits khatam ho gaye. Admin se contact karo ya plan upgrade karo."
+        )
+
     # RBAC
     from app.core.auth import check_permission, get_intent_permission
     from app.agents.auto_router import get_router
 
-    # Quick intent classification for RBAC check
-    route_result = await get_router().route(req.message, req.model)
-    intent       = req.intent or route_result["intent"]
+    route_result  = await get_router().route(req.message, req.model)
+    intent        = req.intent or route_result["intent"]
     required_perm = get_intent_permission(intent)
     if not check_permission(user, required_perm, req.repo_id):
         raise HTTPException(
@@ -123,6 +130,9 @@ async def chat(
             model      = req.model,
         )
 
+    # ✅ SUCCESS ke baad credit deduct karo
+    deduct_credit(user.user_id, reason="chat_message")
+
     result["session_id"] = session_id
     return {"status": "success", "data": result}
 
@@ -137,10 +147,6 @@ async def chat_stream(
     """
     Streaming SSE endpoint.
     Response tokens stream karte hain real-time mein.
-
-    Client usage:
-        const es = new EventSource('/api/chat/stream')
-        es.onmessage = (e) => { const chunk = JSON.parse(e.data); ... }
     """
     user = await _get_user(authorization)
     orch = _get_orch(req.repo_id)
@@ -148,6 +154,12 @@ async def chat_stream(
     session_id = req.session_id or str(uuid.uuid4())[:12]
 
     async def event_generator() -> AsyncGenerator[str, None]:
+        # ✅ Credit check — stream shuru karne se PEHLE
+        from app.core.user_admin import has_credits, deduct_credit
+        if not has_credits(user.user_id):
+            yield f"data: {json.dumps({'content': 'Credits khatam ho gaye.', 'done': True, 'error': True, 'error_code': 'INSUFFICIENT_CREDITS'})}\n\n"
+            return
+
         try:
             from app.agents.delegation_manager import DelegationManager
             dm = DelegationManager(store=orch.store, repo_id=req.repo_id)
@@ -161,6 +173,9 @@ async def chat_stream(
             ):
                 payload = chunk.model_dump()
                 yield f"data: {json.dumps(payload)}\n\n"
+
+            # ✅ Stream complete hone ke baad credit deduct karo
+            deduct_credit(user.user_id, reason="chat_stream")
 
             # Final done event
             yield f"data: {json.dumps({'content': '', 'done': True})}\n\n"
@@ -195,9 +210,20 @@ async def chat_async(
     orch       = _get_orch(req.repo_id)
     session_id = req.session_id or str(uuid.uuid4())[:12]
 
+    # ✅ Credit check
+    from app.core.user_admin import has_credits, deduct_credit
+    if not has_credits(user.user_id):
+        raise HTTPException(
+            status_code=402,
+            detail="Credits khatam ho gaye. Admin se contact karo ya plan upgrade karo."
+        )
+
     from app.agents.auto_router import get_router
     route_result = await get_router().route(req.message, req.model)
     intent       = req.intent or route_result["intent"]
+
+    # ✅ Task queue mein dalne se PEHLE credit deduct karo
+    deduct_credit(user.user_id, reason="chat_async")
 
     from app.tasks import run_agent_task
     task = run_agent_task.delay(

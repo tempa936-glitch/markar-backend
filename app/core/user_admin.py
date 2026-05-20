@@ -385,6 +385,104 @@ def check_repo_limit(user_id: str) -> Dict[str, Any]:
 
 SIGNUP_FREE_CREDITS = int(os.getenv("MARKAR_SIGNUP_CREDITS", "30"))
 
+# ── Repo Tier Credit System ────────────────────────────────────────────────────
+
+REPO_TIERS = [
+    {"name": "TINY",   "max_files": 50,   "cost": 2,  "blocked": False},
+    {"name": "SMALL",  "max_files": 200,  "cost": 5,  "blocked": False},
+    {"name": "MEDIUM", "max_files": 600,  "cost": 10, "blocked": False},
+    {"name": "LARGE",  "max_files": 1500, "cost": 20, "blocked": False},
+    {"name": "HUGE",   "max_files": None, "cost": 0,  "blocked": True},
+]
+
+def get_repo_tier(total_files: int) -> Dict[str, Any]:
+    """File count se tier determine karo."""
+    for tier in REPO_TIERS:
+        if tier["blocked"]:
+            return tier  # HUGE — hamesha last
+        if total_files < tier["max_files"]:
+            return tier
+    return REPO_TIERS[-1]  # fallback HUGE
+
+def check_repo_credit(user_id: str, total_files: int) -> Dict[str, Any]:
+    """
+    Repo index karne se pehle check karo:
+    - HUGE repos free users ke liye BLOCKED
+    - Enough credits hain ya nahi
+
+    Returns:
+        allowed: bool
+        tier: dict
+        reason: str (agar blocked)
+    """
+    tier = get_repo_tier(total_files)
+
+    if tier["blocked"]:
+        return {
+            "allowed": False,
+            "tier": tier,
+            "reason": "HUGE_REPO_BLOCKED",
+            "message": f"Yeh repo bohot badi hai ({total_files} files). "
+                       f"1500+ files wali repos free plan mein index nahi ho sakti.",
+        }
+
+    credits_info = get_user_credits(user_id)
+
+    # Unlimited users ke liye always allowed
+    if credits_info.get("unlimited"):
+        return {"allowed": True, "tier": tier, "credits_after": None}
+
+    current = credits_info.get("credits", 0)
+    cost    = tier["cost"]
+
+    if current < cost:
+        return {
+            "allowed": False,
+            "tier": tier,
+            "reason": "INSUFFICIENT_CREDITS",
+            "message": (
+                f"Aapke paas sirf {current} credit(s) hain. "
+                f"Is repo ko index karne ke liye {cost} credits chahiye "
+                f"({tier['name']} tier — {total_files} files). "
+                f"Admin se credits mangwao."
+            ),
+            "required": cost,
+            "available": current,
+        }
+
+    return {
+        "allowed": True,
+        "tier": tier,
+        "cost": cost,
+        "credits_before": current,
+        "credits_after":  current - cost,
+    }
+
+def deduct_repo_credit(user_id: str, total_files: int, repo_id: str) -> Dict[str, Any]:
+    """Repo index hone ke baad credits deduct karo."""
+    tier = get_repo_tier(total_files)
+    if tier["blocked"]:
+        return {"success": False, "reason": "HUGE_REPO_BLOCKED"}
+
+    credits_info = get_user_credits(user_id)
+    if credits_info.get("unlimited"):
+        return {"success": True, "deducted": 0, "reason": "unlimited_user"}
+
+    cost = tier["cost"]
+    result = add_credits(
+        user_id,
+        amount   = -cost,
+        reason   = f"repo_index:{tier['name']}:{repo_id}",
+        admin_id = "system",
+    )
+    return {
+        "success":        True,
+        "deducted":       cost,
+        "tier":           tier["name"],
+        "credits_after":  result.get("credits", 0),
+    }
+
+
 def grant_signup_credits(user_id: str) -> Dict[str, Any]:
     # Sirf naye users ko — already credits hain toh skip
     existing = get_user_credits(user_id)
