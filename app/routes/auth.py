@@ -290,3 +290,57 @@ async def me(authorization: Optional[str] = Header(None)):
     if user_token is None:
         raise HTTPException(status_code=401, detail="Unauthorized")
     return {"status": "success", "data": {"user_id": user_token.user_id, "repo_id": user_token.repo_id, "role": user_token.role.value}}
+
+
+# ── User: apne credits check karo ─────────────────────────────────────────
+
+@auth_router.get(
+    "/me/credits",
+    summary="Apna credit balance check karo",
+)
+async def my_credits(authorization: Optional[str] = Header(None)):
+    """
+    User apna credit balance, unlimited status aur usage dekh sakta hai.
+    Admin ki zaroorat nahi — apna hi data hai.
+    """
+    user_token = await get_current_user(authorization)
+    if user_token is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from app.core.user_admin import get_user_credits, has_credits
+    credits = get_user_credits(user_token.user_id)
+    return {
+        "status": "success",
+        "data": {
+            "credits":    credits["credits"],
+            "unlimited":  bool(credits["unlimited"]),
+            "total_used": credits["total_used"],
+            "can_use":    has_credits(user_token.user_id),
+        },
+    }
+
+
+@auth_router.get(
+    "/me/limits",
+    summary="Apni account limits dekho — plan, max repos, etc.",
+)
+async def my_limits(authorization: Optional[str] = Header(None)):
+    user_token = await get_current_user(authorization)
+    if user_token is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from app.core.user_admin import get_user_limits, check_repo_limit
+    limits    = get_user_limits(user_token.user_id)
+    repo_info = check_repo_limit(user_token.user_id)
+    return {
+        "status": "success",
+        "data": {
+            "plan":             limits["plan"],
+            "max_repos":        limits["max_repos"],
+            "repos_used":       repo_info["current"],
+            "can_add_repo":     repo_info["allowed"],
+            "max_repo_size_mb": limits["max_repo_size_mb"],
+            "max_messages_day": limits["max_messages_day"],
+            "is_active":        bool(limits["is_active"]),
+        },
+    }

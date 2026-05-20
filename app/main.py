@@ -39,6 +39,7 @@ app.include_router(ci_router)
 app.include_router(chat_router)
 app.include_router(admin_router)
 app.include_router(settings_router)
+app.include_router(auth_router)
 
 
 @app.on_event("startup")
@@ -103,6 +104,11 @@ async def startup():
     init_custom_agents_db()
     init_incremental_db()
     print("[Markar] Phase 4 — Vector memory + Custom agents initialized")
+
+    # User Admin — credits, limits, permissions
+    from app.core.user_admin import init_user_admin_db
+    init_user_admin_db()
+    print("[Markar] User Admin DB initialized — credits + limits ready")
 
     # Phase 5: Multi-agent delegation + AutoRouter + Celery
     from app.core.agent_registry import setup_default_agents
