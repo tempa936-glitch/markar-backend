@@ -9,8 +9,11 @@ from datetime import datetime
 from typing import Optional
 import asyncio
 from typing import AsyncGenerator
+import sqlite3
 
 _jobs = {}  # { repo_id: { ...job data... } }
+
+JOBS_DB = os.getenv("MARKAR_DB_PATH", "markar.db")
 
 LANG_MAP = {
     ".py": "Python", ".js": "JavaScript",
@@ -27,7 +30,109 @@ IGNORE_DIRS = {
     ".next", "target", "vendor"
 }
 
-def start_initialization(git_url=None, repo_path=None, git_branch="main") -> dict:
+def _init_jobs_db():
+    """Repo jobs persist karne ke liye SQLite table."""
+    with sqlite3.connect(JOBS_DB) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS persisted_repos (
+                repo_id     TEXT PRIMARY KEY,
+                git_url     TEXT,
+                git_branch  TEXT DEFAULT 'main',
+                status      TEXT DEFAULT 'READY',
+                created_at  TEXT,
+                overview    TEXT
+            )
+        """)
+
+def _save_repo_to_db(job: dict):
+    """Repo ka record SQLite mein save karo."""
+    import json
+    with sqlite3.connect(JOBS_DB) as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO persisted_repos
+                (repo_id, git_url, git_branch, status, created_at, overview)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            job["repo_id"],
+            job.get("git_url"),
+            job.get("git_branch", "main"),
+            job.get("status", "READY"),
+            job.get("created_at"),
+            json.dumps(job.get("overview") or {}),
+        ))
+
+
+def load_persisted_repos():
+    """
+    Server startup pe SQLite se saved repos load karo.
+    Dono sources se: persisted_repos table + user_repos table.
+    """
+    import json
+    try:
+        _init_jobs_db()
+        loaded = 0
+
+        # Source 1: persisted_repos table
+        with sqlite3.connect(JOBS_DB) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM persisted_repos"
+            ).fetchall()
+
+        for row in rows:
+            repo_id = row["repo_id"]
+            if repo_id not in _jobs:
+                overview = {}
+                try:
+                    overview = json.loads(row["overview"] or "{}")
+                except Exception:
+                    pass
+                _jobs[repo_id] = {
+                    "repo_id":    repo_id,
+                    "git_url":    row["git_url"],
+                    "git_branch": row["git_branch"],
+                    "repo_path":  None,
+                    "clone_path": None,
+                    "status":     "NEEDS_RECONNECT",
+                    "overview":   overview,
+                    "graph_ready": False,
+                    "orchestrator": None,
+                    "error":      None,
+                    "created_at": row["created_at"],
+                }
+                loaded += 1
+
+        # Source 2: user_repos table
+        try:
+            from app.core.auth import load_all_user_repos
+            user_repos = load_all_user_repos()
+            for repo in user_repos:
+                repo_id = repo["repo_id"]
+                if repo_id not in _jobs:
+                    _jobs[repo_id] = {
+                        "repo_id":    repo_id,
+                        "git_url":    repo.get("git_url"),
+                        "git_branch": repo.get("git_branch", "main"),
+                        "repo_path":  None,
+                        "clone_path": None,
+                        "status":     "NEEDS_RECONNECT",
+                        "overview":   repo.get("overview", {}),
+                        "graph_ready": False,
+                        "orchestrator": None,
+                        "error":      None,
+                        "created_at": repo.get("created_at"),
+                    }
+                    loaded += 1
+        except Exception as e:
+            print(f"[RepoService] user_repos load failed: {e}")
+
+        print(f"[RepoService] Loaded {loaded} repos from DB")
+    except Exception as e:
+        print(f"[RepoService] DB load failed: {e}")
+
+
+
+def start_initialization(git_url=None, repo_path=None, git_branch="main", user_id: str = None) -> dict:
     
     # Deterministic repo_id — same URL = same ID
     clone_path = None
@@ -42,6 +147,7 @@ def start_initialization(git_url=None, repo_path=None, git_branch="main") -> dic
     # Job entry banao
     _jobs[repo_id] = {
         "repo_id": repo_id,
+        "user_id":  user_id,
         "git_url": git_url,
         "git_branch": git_branch,
         "repo_path": repo_path or clone_path,
@@ -71,6 +177,59 @@ def start_initialization(git_url=None, repo_path=None, git_branch="main") -> dic
         "graph_ready": False,
         "error": None
     }
+
+def reconnect_repo(repo_id: str) -> dict:
+    """
+    Server restart ke baad — Neo4j se existing graph reconnect karo.
+    Re-clone ya re-parse nahi hoga — sirf store connect hoga.
+    """
+    job = _jobs.get(repo_id)
+    if not job:
+        return {"error": f"Repo {repo_id} not found"}
+
+    if job.get("graph_ready"):
+        return {"status": "already_ready", "repo_id": repo_id}
+
+    try:
+        from app.code_intelligence import CodeIntelligenceOrchestrator
+        from app.code_intelligence.graph.neo4j_store import Neo4jStore
+
+        # Sirf store connect karo — parse mat karo
+        store = Neo4jStore(repo_id=repo_id)
+        stats = store.get_stats()
+
+        # Check karo graph hai ya nahi Neo4j mein
+        if stats.get("total_nodes", 0) == 0:
+            return {
+                "status":  "not_found_in_neo4j",
+                "repo_id": repo_id,
+                "message": "Graph Neo4j mein nahi hai — dobara initialize karo",
+            }
+
+        # Orchestrator banao bina parse kiye
+        orch = CodeIntelligenceOrchestrator.__new__(
+            CodeIntelligenceOrchestrator
+        )
+        orch.repo_path = job.get("repo_path") or ""
+        orch.store     = store
+
+        job["orchestrator"] = orch
+        job["graph_ready"]  = True
+        job["status"]       = "READY"
+        job["graph_stats"]  = stats
+
+        print(f"[Reconnect] ✅ {repo_id} — {stats.get('total_nodes')} nodes")
+        return {
+            "status":      "reconnected",
+            "repo_id":     repo_id,
+            "total_nodes": stats.get("total_nodes", 0),
+        }
+
+    except Exception as e:
+        print(f"[Reconnect] ❌ {repo_id}: {e}")
+        job["status"] = "ERROR"
+        job["error"]  = str(e)
+        return {"error": str(e)}
 
 def _force_rmtree(path: str):
     """
@@ -150,7 +309,21 @@ def _worker(repo_id: str):
             job["graph_stats"] = init_result
             job["graph_ready"] = True
             job["status"] = "READY"
-            print(f"[STAGE4] ✅ READY!") 
+            print(f"[STAGE4] ✅ READY!")
+            _save_repo_to_db(job) 
+            # User ke saath repo link karo
+            if job.get("user_id"):
+                from app.core.auth import save_user_repo
+                save_user_repo(
+                    user_id=job["user_id"],
+                    repo_id=repo_id,
+                    git_url=job.get("git_url"),
+                    git_branch=job.get("git_branch", "main"),
+                    status="READY",
+                    overview=job.get("overview"),
+                )
+                print(f"[STAGE4] Repo saved for user: {job['user_id']}")
+
         except Exception as stage4_error:
             import traceback
             print(f"[STAGE4] ❌ ERROR: {stage4_error}")      # ← ADD

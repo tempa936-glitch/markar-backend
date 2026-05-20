@@ -254,3 +254,66 @@ async def workflow_code_review(request: CodeReviewWorkflowRequest,
     executor = WorkflowExecutor(orchestrator)
     return {"status": "success",
             "data": executor.on_code_review(request.pr_description, request.changed_files)}
+
+# ── User Repos API ────────────────────────────────────────────────────────
+
+@ci_router.get("/my-repos")
+async def get_my_repos(request: Request):
+    """
+    Current user ke saare repos return karo.
+    Frontend dashboard mein repo list ke liye.
+    """
+    from app.core.auth import get_user_repos, TokenPayload
+    import os
+
+    auth_enabled = os.getenv("MARKAR_AUTH_ENABLED", "false").lower() == "true"
+
+    if not auth_enabled:
+        # Dev mode — saare repos return karo
+        from app.services.repo_service import list_all_repos
+        return {"status": "success", "data": list_all_repos()}
+
+    # Auth mode — sirf us user ke repos
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token required")
+
+    from app.core.auth import verify_token
+    payload = verify_token(auth_header[7:])
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    repos = get_user_repos(payload.user_id)
+    return {"status": "success", "data": repos, "user_id": payload.user_id}
+
+
+@ci_router.delete("/my-repos/{repo_id}")
+async def delete_my_repo(repo_id: str, request: Request):
+    """User ki repo list se ek repo hata do."""
+    from app.core.auth import verify_token, delete_user_repo
+    import os
+
+    auth_enabled = os.getenv("MARKAR_AUTH_ENABLED", "false").lower() == "true"
+    if not auth_enabled:
+        return {"status": "success", "message": "Dev mode — skipped"}
+
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token required")
+
+    payload = verify_token(auth_header[7:])
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    delete_user_repo(payload.user_id, repo_id)
+    return {"status": "success", "message": f"Repo {repo_id} removed"}
+
+@ci_router.post("/reconnect/{repo_id}")
+async def reconnect_repo(repo_id: str):
+    """
+    Server restart ke baad Neo4j se graph reconnect karo.
+    Re-parse nahi hoga — sirf existing graph connect hoga.
+    """
+    from app.services.repo_service import reconnect_repo
+    result = reconnect_repo(repo_id)
+    return {"status": "success", "data": result}

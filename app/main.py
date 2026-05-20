@@ -16,6 +16,7 @@ from app.routes.health import system_router, ci_router
 from app.routes.chat   import chat_router
 from app.routes.admin  import admin_router
 from app.routes.auth   import auth_router
+from app.routes.settings import settings_router
 
 app = FastAPI(
     title="Markar Intelligence",
@@ -37,16 +38,53 @@ app.include_router(system_router)
 app.include_router(ci_router)
 app.include_router(chat_router)
 app.include_router(admin_router)
-app.include_router(auth_router)
+app.include_router(settings_router)
 
 
 @app.on_event("startup")
 async def startup():
     # Phase 1: Conversation store + Tool registry
     from app.core.conversation_store import init_db
+    from app.services.repo_service import (
+        load_persisted_repos, _init_jobs_db, reconnect_repo
+    )
+
     from app.core.tool_registry import get_registry
+    import os
     init_db()
+    _init_jobs_db()
+    from app.core.llm_settings import init_llm_settings_db
+    init_llm_settings_db()
+    
     print("[Markar] Phase 1 — Conversation DB initialized")
+
+    load_persisted_repos()
+    print("[Startup] Persisted repos loaded")
+
+    # Auto-reconnect — Neo4j se existing graphs
+    from app.services.repo_service import _jobs
+    reconnected = 0
+    for repo_id, job in _jobs.items():
+        if job.get("status") == "NEEDS_RECONNECT":
+            result = reconnect_repo(repo_id)
+            if result.get("status") == "reconnected":
+                reconnected += 1
+
+    print(f"[Startup] Auto-reconnected {reconnected} repos from Neo4j")
+
+    # Redis check
+    redis_url = os.getenv("REDIS_URL", "")
+    if redis_url:
+        try:
+            import redis as redis_lib
+            r = redis_lib.from_url(redis_url, socket_connect_timeout=3)
+            r.ping()
+            print(f"[Startup] ✅ Redis connected: {redis_url[:40]}...")
+        except Exception as e:
+            print(f"[Startup] ⚠️ Redis failed: {e}")
+            print("[Startup] Dev mode mein chalega — async tasks synchronous honge")
+    else:
+        print("[Startup] Redis URL nahi hai — dev mode")
 
     # Phase 3: Observability + Multi-repo + Auth
     from app.core.observability import init_observability_db

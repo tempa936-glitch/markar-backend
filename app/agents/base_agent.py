@@ -46,19 +46,17 @@ class BaseAgent:
     MAX_CONTEXT_TOKENS = 6000   # approximate token ceiling for graph context
     MAX_HISTORY_TURNS  = 8      # last N conversation turns to include
 
-    def __init__(
-        self,
-        store=None,
-        repo_id: str = "",
-        session_id: str = None,
-        conv_store=None,
-        tool_registry=None,
-    ):
+    def __init__(self, store, repo_id: str,
+                 session_id: str = None,
+                 conv_store=None,
+                 tool_registry=None,
+                 user_id: str = "dev-user"):
         self.store         = store
         self.repo_id       = repo_id
         self.session_id    = session_id
         self.conv_store    = conv_store
         self.tool_registry = tool_registry
+        self.user_id       = user_id
 
     # ── Neo4j query helpers ─────────────────────────────────────────────────
 
@@ -123,7 +121,15 @@ class BaseAgent:
         """
         import httpx
 
-        api_key = os.getenv("OPENROUTER_API_KEY", "")
+        try:
+            from app.core.llm_settings import get_user_llm_keys
+            user_keys = get_user_llm_keys(self.user_id)
+            api_key = user_keys.get("openrouter_key") or os.getenv("OPENROUTER_API_KEY", "")
+            if not model:
+                model = user_keys.get("preferred_model")
+        except Exception:
+            api_key = os.getenv("OPENROUTER_API_KEY", "")
+
         if not api_key:
             return self._fallback_response(graph_context)
 
@@ -179,6 +185,23 @@ class BaseAgent:
                 if not text:
                     return self._fallback_response(graph_context)
                 print(f"[LLM] OK — model={selected_model} attempt={attempt+1}")
+                try:
+                    import time as _time
+                    from app.core.llm_settings import track_usage
+                    usage = data.get("usage", {})
+                    track_usage(
+                        user_id=self.user_id,
+                        model=selected_model,
+                        prompt_tokens=usage.get("prompt_tokens", 0),
+                        completion_tokens=usage.get("completion_tokens", 0),
+                        session_id=self.session_id,
+                        repo_id=self.repo_id,
+                        agent=self.__class__.__name__,
+                        success=True,
+                    )
+                except Exception:
+                    pass
+
                 return text
 
             except Exception as e:

@@ -44,6 +44,23 @@ def init_auth_db():
             ON users(email);
         CREATE INDEX IF NOT EXISTS idx_users_provider
             ON users(provider, provider_id);
+        CREATE TABLE IF NOT EXISTS user_repos (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     TEXT NOT NULL,
+            repo_id     TEXT NOT NULL,
+            git_url     TEXT,
+            git_branch  TEXT DEFAULT 'main',
+            repo_name   TEXT,
+            status      TEXT DEFAULT 'READY',
+            overview    TEXT,
+            created_at  TEXT NOT NULL,
+            last_used   TEXT,
+            UNIQUE(user_id, repo_id),
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_user_repos_user
+            ON user_repos(user_id);                   
         """)
 
 
@@ -340,3 +357,121 @@ async def get_current_user(authorization: str = None) -> Optional[TokenPayload]:
 
     token = authorization[7:]
     return verify_token(token)
+
+# ── User Repo Management ──────────────────────────────────────────────────
+
+def save_user_repo(user_id: str, repo_id: str, git_url: str = None,
+                   git_branch: str = "main", repo_name: str = None,
+                   status: str = "READY", overview: dict = None) -> bool:
+    """
+    User ke liye repo save karo.
+    Agar already hai toh update karo.
+    """
+    import json
+    now = datetime.utcnow().isoformat()
+    name = repo_name or (git_url.split("/")[-1].replace(".git", "")
+                         if git_url else repo_id)
+    try:
+        with _get_conn() as conn:
+            conn.execute("""
+                INSERT INTO user_repos
+                    (user_id, repo_id, git_url, git_branch,
+                     repo_name, status, overview, created_at, last_used)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, repo_id) DO UPDATE SET
+                    status   = excluded.status,
+                    overview = excluded.overview,
+                    last_used = excluded.last_used
+            """, (
+                user_id, repo_id, git_url, git_branch,
+                name, status,
+                json.dumps(overview or {}),
+                now, now,
+            ))
+        return True
+    except Exception as e:
+        print(f"[Auth] save_user_repo failed: {e}")
+        return False
+
+
+def get_user_repos(user_id: str) -> list:
+    """User ke saare repos return karo — last used pehle."""
+    import json
+    try:
+        with _get_conn() as conn:
+            rows = conn.execute("""
+                SELECT repo_id, git_url, git_branch, repo_name,
+                       status, overview, created_at, last_used
+                FROM user_repos
+                WHERE user_id = ?
+                ORDER BY last_used DESC, created_at DESC
+            """, (user_id,)).fetchall()
+
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["overview"] = json.loads(item["overview"] or "{}")
+            except Exception:
+                item["overview"] = {}
+            result.append(item)
+        return result
+    except Exception as e:
+        print(f"[Auth] get_user_repos failed: {e}")
+        return []
+
+
+def update_repo_last_used(user_id: str, repo_id: str):
+    """Jab bhi user repo use kare — last_used update karo."""
+    now = datetime.utcnow().isoformat()
+    try:
+        with _get_conn() as conn:
+            conn.execute("""
+                UPDATE user_repos SET last_used = ?
+                WHERE user_id = ? AND repo_id = ?
+            """, (now, user_id, repo_id))
+    except Exception as e:
+        print(f"[Auth] update_repo_last_used failed: {e}")
+
+
+def delete_user_repo(user_id: str, repo_id: str) -> bool:
+    """User ki repo list se ek repo hata do."""
+    try:
+        with _get_conn() as conn:
+            conn.execute("""
+                DELETE FROM user_repos
+                WHERE user_id = ? AND repo_id = ?
+            """, (user_id, repo_id))
+        return True
+    except Exception as e:
+        print(f"[Auth] delete_user_repo failed: {e}")
+        return False
+
+
+def load_all_user_repos() -> list:
+    """
+    Server startup pe — saare users ke repos load karo.
+    repo_service._jobs mein add karne ke liye.
+    """
+    import json
+    try:
+        with _get_conn() as conn:
+            rows = conn.execute("""
+                SELECT DISTINCT repo_id, git_url, git_branch,
+                       repo_name, status, overview, created_at
+                FROM user_repos
+                WHERE status IN ('READY', 'NEEDS_RECONNECT')
+            """).fetchall()
+
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["overview"] = json.loads(item["overview"] or "{}")
+            except Exception:
+                item["overview"] = {}
+            result.append(item)
+        return result
+    except Exception as e:
+        print(f"[Auth] load_all_user_repos failed: {e}")
+        return []
