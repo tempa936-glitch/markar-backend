@@ -357,14 +357,25 @@ class DelegationManager:
         return {}
 
     def _get_system_prompt(self, intent: str) -> str:
-        prompts = {
-            "ask":    "Tu ek expert code analyst hai. Graph data se sawaalon ka jawab do — file paths aur connections include karo.",
-            "debug":  "Tu ek senior debugger hai. Root cause dhundho, blast radius batao, fix suggest karo.",
-            "build":  "Tu ek senior software engineer hai. Clean, production-ready code generate karo.",
-            "qa":     "Tu ek QA engineer hai. Comprehensive pytest unit tests aur integration tests likho.",
-            "impact": "Tu ek code architect hai. Change ka blast radius aur risk level analyze karo.",
+        base_prompts = {
+            "ask":    "Tu ek expert AI code analyst hai. Graph data aur codebase ke baare mein user ke sawaalon ka jawab do. File paths aur unke connections explain karo.",
+            "debug":  "Tu ek senior debugger aur AI assistant hai. Errors ka root cause dhundho, blast radius batao, aur clean, working fix suggest karo.",
+            "build":  "Tu ek senior software engineer hai. Clean, optimized, aur production-ready code generate karo.",
+            "qa":     "Tu ek expert QA engineer hai. Comprehensive unit tests aur integration tests (jaise pytest) likho aur unka logic explain karo.",
+            "impact": "Tu ek software architect hai. Code change ka blast radius aur risk level deeply analyze karo.",
         }
-        return prompts.get(intent, prompts["ask"])
+        
+        formatting_rules = """
+        
+CRITICAL FORMATTING RULES:
+1. Apne jawab ek professional aur highly-readable format me do. Jawab concise aur short rakho.
+2. Headings ko hamesha **Bold** (`**Heading Name**`) rakho. `#` ya `###` ka use mat karo.
+3. File paths, function names aur important keywords ko bhi **Bold** (`**file.py**`) karo.
+4. IMPORTANT: Kisi bhi halat me backticks (`) ka use mat karo kyonki frontend unhe render nahi karta. Code snippets ke liye normal line breaks use karo.
+5. Lambe paragraphs avoid karo. Clear aur short bullet points (`-` ya `•`) ka use karo.
+6. Jawab naturally flow hona chahiye — ek AI assistant ki tarah politely aur clearly explain karo.
+"""
+        return base_prompts.get(intent, base_prompts["ask"]) + formatting_rules
 
     async def _maybe_compress_history(self, session_id: str) -> None:
         """Compress history if token count is high."""

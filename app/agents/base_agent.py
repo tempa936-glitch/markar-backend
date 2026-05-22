@@ -125,8 +125,17 @@ class BaseAgent:
             from app.core.llm_settings import get_user_llm_keys
             user_keys = get_user_llm_keys(self.user_id)
             api_key = user_keys.get("openrouter_key") or os.getenv("OPENROUTER_API_KEY", "")
-            if not model:
+            
+            # If model is not provided or it's just a default fallback like "openrouter/free"
+            # we should use the user's preferred_model if available.
+            if not model or model == "openrouter/free":
                 model = user_keys.get("preferred_model")
+                
+            # If use_own_keys is true, always respect user's preferred_model unless the frontend
+            # explicitly passed a different specific model (not the default free one).
+            if user_keys.get("use_own_keys") and (not model or model == "openrouter/free"):
+                model = user_keys.get("preferred_model")
+                
         except Exception:
             api_key = os.getenv("OPENROUTER_API_KEY", "")
 
@@ -230,7 +239,20 @@ class BaseAgent:
         import httpx
         import json
 
-        api_key = os.getenv("OPENROUTER_API_KEY", "")
+        try:
+            from app.core.llm_settings import get_user_llm_keys
+            user_keys = get_user_llm_keys(self.user_id)
+            api_key = user_keys.get("openrouter_key") or os.getenv("OPENROUTER_API_KEY", "")
+            
+            if not model or model == "openrouter/free":
+                model = user_keys.get("preferred_model")
+                
+            if user_keys.get("use_own_keys") and (not model or model == "openrouter/free"):
+                model = user_keys.get("preferred_model")
+                
+        except Exception:
+            api_key = os.getenv("OPENROUTER_API_KEY", "")
+
         if not api_key:
             yield StreamChunk(content=self._fallback_response(graph_context), done=True)
             return
@@ -249,10 +271,11 @@ class BaseAgent:
             full_user_content += f"=== CODEBASE KNOWLEDGE GRAPH ===\n{context_text}\n=================================\n\n"
         full_user_content += f"User: {user_message}"
 
-        _env_model = os.getenv("MARKAR_LLM_MODEL", "openrouter/free")
-        selected_model = model or _env_model
+        selected_model = model or os.getenv("MARKAR_LLM_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
         if selected_model == "openrouter/free":
             selected_model = "meta-llama/llama-3.3-70b-instruct:free"
+
+        print(f"[LLM Stream] Using model={selected_model} for user={self.user_id}")
 
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:

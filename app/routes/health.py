@@ -3,7 +3,7 @@ Markar Intelligence — All API Routes
 Fixed: no duplicate router, git clone support, rich analysis.
 """
 
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, HTTPException, Query, Depends, Header, Request
 from pydantic import BaseModel
 from typing import List, Optional
 import os, shutil, tempfile, hashlib
@@ -78,10 +78,11 @@ class CodeReviewWorkflowRequest(BaseModel):
 @ci_router.post("/initialize")
 async def initialize(
     request: InitRequest,
-    authorization: Optional[str] = None,
+    authorization: Optional[str] = Header(None),  # ✅ Header se aayega ab
 ):
     """Initialize from local path OR GitHub URL — non-blocking."""
-    # Auth — user_id nikalo (agar available ho)
+
+    # ── Step 1: user_id nikalo ──────────────────────────────
     user_id = None
     try:
         from app.core.auth import get_current_user
@@ -91,23 +92,40 @@ async def initialize(
     except Exception:
         pass
 
+    # ── Step 2: Limits & Credit check (CLONE SE PEHLE) ───────────────
+    if user_id:
+        from app.core.user_admin import check_repo_limit
+        repo_limit_check = check_repo_limit(user_id)
+        if not repo_limit_check["allowed"]:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Repo limit reached. Aap apne plan me sirf {repo_limit_check['max']} repos add kar sakte hain. Purani repos delete karein ya admin se limit badhwayein."
+            )
+
+    if user_id and request.git_url:
+        from app.core.user_admin import has_credits
+        if not has_credits(user_id):
+            raise HTTPException(
+                status_code=402,
+                detail="Credits khatam ho gaye. Repo index nahi ho sakta. Admin se contact karo."
+            )
+        # GitHub API se size + tier check — HUGE ya insufficient credits block
+        from app.services.repo_service import _github_precheck
+        precheck = _github_precheck(request.git_url, user_id)
+        if precheck["blocked"]:
+            raise HTTPException(
+                status_code=402,
+                detail=precheck["message"],
+                headers={"X-Block-Reason": precheck.get("reason", "BLOCKED")}
+            )
+
+    # ── Step 3: Worker shuru karo ───────────────────────────
     result = start_initialization(
         git_url    = request.git_url,
         repo_path  = request.repo_path,
         git_branch = request.git_branch,
-        user_id    = user_id,
+        user_id    = user_id,   # ✅ ab sahi user_id pass ho raha hai
     )
-
-    # Tier info add karo response mein (file count baad mein OVERVIEW_READY pe milega)
-    from app.core.user_admin import REPO_TIERS
-    result["tier_info"] = {
-        "tiers": [
-            {"name": t["name"], "max_files": t["max_files"],
-             "cost": t["cost"], "blocked": t["blocked"]}
-            for t in REPO_TIERS
-        ],
-        "note": "Tier OVERVIEW_READY ke baad confirm hoga — file count ke baad.",
-    }
     return result
 
 

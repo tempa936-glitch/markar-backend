@@ -280,15 +280,29 @@ def _github_precheck(git_url: str, user_id: str) -> dict:
         with urllib.request.urlopen(req, timeout=8) as resp:
             data = _json.loads(resp.read())
 
-        # GitHub size kilobytes mein deta hai
         size_kb = data.get("size", 0)
+        default_branch = data.get("default_branch", "main")
+        
+        # Tree API se exact file count nikalo
+        exact_files = None
+        try:
+            tree_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{default_branch}?recursive=1"
+            req_tree = urllib.request.Request(
+                tree_url,
+                headers={"User-Agent": "Markar-App", "Accept": "application/vnd.github.v3+json"}
+            )
+            with urllib.request.urlopen(req_tree, timeout=8) as resp_tree:
+                tree_data = _json.loads(resp_tree.read())
+                # Sirf files count karo (blob)
+                exact_files = sum(1 for item in tree_data.get("tree", []) if item.get("type") == "blob")
+        except Exception as e:
+            print(f"[PRECHECK] Tree API failed ({e}), using estimate fallback")
 
-        # Size → estimated file count (rough: 1 KB ≈ 0.5 files, capped)
-        # Zyada accurate: HUGE repos usually >500MB
-        estimated_files = size_kb // 2
+        # Fallback to estimate if exact_files couldn't be fetched
+        estimated_files = exact_files if exact_files is not None else (size_kb // 2)
 
         print(f"[PRECHECK] {owner}/{repo} → size={size_kb}KB, "
-              f"estimated_files≈{estimated_files}")
+              f"files={estimated_files} (exact={exact_files is not None})")
 
         # HUGE check — 1500+ files ya 300MB+
         if size_kb > 300_000 or estimated_files >= 1500:
@@ -297,7 +311,7 @@ def _github_precheck(git_url: str, user_id: str) -> dict:
                 "reason": "HUGE_REPO_BLOCKED",
                 "message": (
                     f"Repo '{owner}/{repo}' bohot badi hai "
-                    f"(~{size_kb//1024}MB, ~{estimated_files:,} files estimated). "
+                    f"(~{size_kb//1024}MB, ~{estimated_files:,} files). "
                     f"1500+ files wali repos free plan mein index nahi ho sakti. "
                     f"Clone shuru hi nahi hoga."
                 ),
@@ -377,6 +391,20 @@ def _worker(repo_id: str):
         job["status"] = "OVERVIEW_READY"
         # ← AB FRONTEND KO DETAILS MIL JAATI HAIN
         
+        # ── Stage 2.5: Exact Credit Check ───────────────────
+        if job.get("user_id"):
+            from app.core.user_admin import check_repo_credit
+            total_files = overview.get("total_files", 0)
+            credit_result = check_repo_credit(job["user_id"], total_files)
+            if not credit_result["allowed"]:
+                job["status"] = "ERROR" # Or BLOCKED, keeping ERROR so UI shows it.
+                job["error"] = credit_result["message"]
+                job["blocked_reason"] = credit_result.get("reason", "INSUFFICIENT_CREDITS")
+                print(f"[CREDIT CHECK] ❌ BLOCKED after clone — {credit_result['reason']}")
+                if job.get("clone_path") and os.path.exists(job["clone_path"]):
+                    _force_rmtree(job["clone_path"])
+                return  # Abort before heavy parsing
+
         # ── Stage 3: Full graph build ───────────────────────
         job["status"]  = "CHECKING_LANGUAGES"
 

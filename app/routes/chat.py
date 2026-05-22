@@ -17,7 +17,7 @@ from typing import Optional, Dict, AsyncGenerator
 
 from fastapi import APIRouter, HTTPException, Header
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from app.services.repo_service import get_orchestrator_by_id
 
@@ -33,6 +33,13 @@ class ChatRequest(BaseModel):
     model:      Optional[str] = None
     target:     Optional[str] = None
     intent:     Optional[str] = None   # override auto-routing
+
+    @model_validator(mode='after')
+    def map_target_to_intent(self) -> 'ChatRequest':
+        if self.target in ["ask", "debug", "build", "qa", "impact"] and not self.intent:
+            self.intent = self.target
+            self.target = None
+        return self
 
 
 class BuildRequest(BaseModel):

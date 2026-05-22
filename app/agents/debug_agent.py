@@ -120,14 +120,32 @@ RULES:
             file_path = target if target.endswith(".py") else ""
 
         if not file_path:
-            # Repo root se dhundhne ki koshish karo
-            repo_root = os.getenv("MARKAR_REPO_PATH", "")
-            if repo_root:
+            repo_roots = []
+            
+            # 1. From RepoService _jobs
+            try:
+                from app.services.repo_service import _jobs
+                for job in _jobs.values():
+                    if job.get("repo_path"):
+                        repo_roots.append(job["repo_path"])
+            except ImportError:
+                pass
+            
+            # 2. From env (fallback)
+            env_repo = os.getenv("MARKAR_REPO_PATH", "")
+            if env_repo and env_repo not in repo_roots:
+                repo_roots.append(env_repo)
+
+            for repo_root in repo_roots:
+                if file_path:
+                    break
                 for root, _, files in os.walk(repo_root):
                     for f in files:
                         if f == target or f == f"{target}.py":
                             file_path = os.path.join(root, f)
                             break
+                    if file_path:
+                        break
 
         if not file_path or not os.path.isfile(file_path):
             # File nahi mili — graph data jo hai wahi use karo
@@ -254,13 +272,15 @@ RULES:
 
         # ── 1. Target node dhundho ────────────────────────────────────
         # Pehle exact match try karo
+        _t = target
         node = self.query_one("""
             MATCH (n:CodeNode {repo_id:$r})
             WHERE n.file_path ENDS WITH $t
-               OR n.file_path ENDS WITH ($t + '.py')
-               OR n.file_path ENDS WITH ($t + '.js')
-               OR n.file_path ENDS WITH ('\\' + $t + '.py')
-               OR n.file_path ENDS WITH ('/' + $t + '.py')
+               OR n.file_path ENDS WITH $t_py
+               OR n.file_path ENDS WITH $t_js
+               OR n.file_path ENDS WITH $t_slash_py
+               OR n.file_path ENDS WITH $t_slash
+               OR n.file_path ENDS WITH $t_back_py
                OR n.name = $t
                OR toLower(n.name) = toLower($t)
             RETURN n.node_id   AS id,
@@ -276,7 +296,14 @@ RULES:
                 ELSE 4
               END
             LIMIT 1
-        """, t=target)
+        """,
+            t          = _t,
+            t_py       = _t + ".py",
+            t_js       = _t + ".js",
+            t_slash_py = "/" + _t + ".py",
+            t_slash    = "/" + _t,
+            t_back_py  = "\\" + _t + ".py",
+        )
 
         # Exact match nahi mila toh CONTAINS try karo
         if not node:
