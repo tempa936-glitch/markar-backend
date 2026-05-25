@@ -126,7 +126,9 @@ def start_initialization(git_url=None, repo_path=None, git_branch="main", user_i
     if git_url:
         import hashlib
         repo_id = hashlib.sha256(git_url.encode()).hexdigest()[:12]
-        clone_path = os.path.join(tempfile.gettempdir(), f"markar_{repo_id}")
+        _base = os.getenv("MARKAR_REPO_PATH", tempfile.gettempdir())
+        os.makedirs(_base, exist_ok=True)
+        clone_path = os.path.join(_base, f"markar_{repo_id}")
     else:
         repo_id = str(uuid.uuid4())[:8]
 
