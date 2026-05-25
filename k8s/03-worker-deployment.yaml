@@ -1,0 +1,73 @@
+---
+# Celery Worker Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: markar-worker
+  namespace: markar
+  labels:
+    app: markar-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: markar-worker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: markar-worker
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/YOUR_GITHUB_USERNAME/markar-worker:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: markar-config
+            - secretRef:
+                name: markar-secrets
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          livenessProbe:
+            exec:
+              command:
+                - celery
+                - -A
+                - app.celery_app.celery_app
+                - inspect
+                - ping
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            failureThreshold: 3
+
+---
+# HorizontalPodAutoscaler for worker
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: markar-worker-hpa
+  namespace: markar
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: markar-worker
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

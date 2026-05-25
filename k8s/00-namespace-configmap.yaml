@@ -1,0 +1,21 @@
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: markar
+  labels:
+    app: markar-intelligence
+
+---
+# ConfigMap — non-sensitive env vars
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: markar-config
+  namespace: markar
+data:
+  MARKAR_DEV_MODE: "false"
+  CELERY_WORKERS: "4"
+  PORT: "8000"
+  PYTHONUNBUFFERED: "1"

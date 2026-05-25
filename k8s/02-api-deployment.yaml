@@ -1,0 +1,94 @@
+---
+# FastAPI App Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: markar-api
+  namespace: markar
+  labels:
+    app: markar-api
+    version: "5.0.0"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: markar-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0       # zero-downtime deploy
+  template:
+    metadata:
+      labels:
+        app: markar-api
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/YOUR_GITHUB_USERNAME/markar-backend:latest  # CI/CD se update hoga
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: markar-config
+            - secretRef:
+                name: markar-secrets
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: sqlite-storage
+              mountPath: /app/markar.db
+              subPath: markar.db
+      volumes:
+        - name: sqlite-storage
+          persistentVolumeClaim:
+            claimName: markar-sqlite-pvc
+
+---
+# Service — internal cluster communication
+apiVersion: v1
+kind: Service
+metadata:
+  name: markar-api-svc
+  namespace: markar
+spec:
+  selector:
+    app: markar-api
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: ClusterIP
+
+---
+# PVC for SQLite persistence
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: markar-sqlite-pvc
+  namespace: markar
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

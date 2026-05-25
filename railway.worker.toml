@@ -1,0 +1,12 @@
+# railway.worker.toml — Celery Worker service
+# Railway mein alag service banao "markar-worker" naam se
+# aur yeh file us service ke liye use karo
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.worker"
+
+[deploy]
+startCommand = "celery -A app.celery_app.celery_app worker --loglevel=info -Q agent,graph,fast,celery"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

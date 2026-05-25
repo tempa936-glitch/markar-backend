@@ -1,0 +1,26 @@
+# railway.toml — Railway deployment configuration
+# Docs: https://docs.railway.app/reference/config-as-code
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 2"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+
+# ── Environment Variables ──────────────────────────
+# Yeh variables Railway dashboard mein set karo:
+#
+# OPENAI_API_KEY          = sk-your-openai-key
+# REDIS_URL               = ${{Redis.REDIS_URL}}       (Railway Redis plugin)
+# NEO4J_URI               = bolt://your-neo4j:7687
+# NEO4J_USER              = neo4j
+# NEO4J_PASSWORD          = your_password
+# GITHUB_CLIENT_ID        = your_github_client_id
+# GITHUB_CLIENT_SECRET    = your_github_client_secret
+# MARKAR_DEV_MODE         = false
+# CELERY_WORKERS          = 4
