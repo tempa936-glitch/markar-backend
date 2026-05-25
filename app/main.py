@@ -17,6 +17,7 @@ from app.routes.chat   import chat_router
 from app.routes.admin  import admin_router
 from app.routes.auth   import auth_router
 from app.routes.settings import settings_router
+from app.routes.features import trace_router, recipe_router, agents_router, forge_router, sandbox_router
 
 app = FastAPI(
     title="Markar Intelligence",
@@ -40,6 +41,11 @@ app.include_router(chat_router)
 app.include_router(admin_router)
 app.include_router(settings_router)
 app.include_router(auth_router)
+app.include_router(trace_router)
+app.include_router(recipe_router)
+app.include_router(agents_router)
+app.include_router(forge_router)
+app.include_router(sandbox_router)
 
 
 @app.on_event("startup")
@@ -109,6 +115,13 @@ async def startup():
     from app.core.user_admin import init_user_admin_db
     init_user_admin_db()
     print("[Markar] User Admin DB initialized — credits + limits ready")
+
+    # Feature: Trace + Recipes
+    from app.core.trace_manager import init_trace_db
+    from app.core.recipe_engine import init_recipe_db
+    init_trace_db()
+    init_recipe_db()
+    print("[Markar] Trace + Recipe DB initialized")
 
     # Phase 5: Multi-agent delegation + AutoRouter + Celery
     from app.core.agent_registry import setup_default_agents

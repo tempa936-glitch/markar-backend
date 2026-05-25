@@ -21,6 +21,7 @@ Key features:
 - Structured AgentResponse output (Pydantic)
 """
 import asyncio
+import uuid as _uuid
 from typing import Dict, Optional, List, AsyncGenerator, Callable, Any
 
 from .base_agent import BaseAgent, AgentResponse, StreamChunk
@@ -144,12 +145,25 @@ class DelegationManager:
         intent:     Optional[str] = None,
         target:     Optional[str] = None,
         model:      Optional[str] = None,
+        trace_id:   Optional[str] = None,
     ) -> Dict:
         """
         Full delegation pipeline — returns final AgentResponse dict.
         """
+        import uuid as _uuid2
+        from app.core.trace_manager import get_tracer, TraceEvent
+        from app.core.trace_manager import EVENT_ROUTING, EVENT_AGENT_STEP, EVENT_COMPLETE
+        tracer   = get_tracer()
+        trace_id = trace_id or str(_uuid2.uuid4())[:12]
+
         conv = self._get_conv_store()
         conv.create_session(session_id, self.repo_id)
+
+        # ── 0. Specialist domain check ────────────────────────────────────
+        _specialist = None
+        if intent is None:
+            from app.core.specialist_agents import find_specialist
+            _specialist = find_specialist(message)
 
         # ── 1. Route intent ───────────────────────────────────────────────
         if intent is None:
@@ -161,6 +175,14 @@ class DelegationManager:
             confidence   = 1.0
             route_method = "explicit"
 
+        # Trace: routing
+        tracer.log(TraceEvent(
+            trace_id=trace_id, session_id=session_id,
+            event_type=EVENT_ROUTING, agent=intent,
+            input_data={"intent": intent, "confidence": round(confidence,2),
+                        "method": route_method, "specialist": _specialist["name"] if _specialist else None,
+                        "message_preview": message[:100]},
+        ))
         print(f"[Delegation] intent={intent} confidence={confidence:.2f} method={route_method} session={session_id[:8]}")
 
         # ── 2. Clarification needed? ──────────────────────────────────────
@@ -193,9 +215,37 @@ class DelegationManager:
                 "from_cache": True,
             }
 
-        # ── 6. Delegate to sub-agent ──────────────────────────────────────
-        agent  = self._get_agent(intent, session_id)
-        result = await self._run_agent(agent, intent, message, target, model)
+        # ── 6. Delegate — specialist OR built-in agent ───────────────────
+        # Trace: agent step start
+        tracer.log(__import__("app.core.trace_manager", fromlist=["TraceEvent"]).TraceEvent(
+            trace_id=trace_id, session_id=session_id,
+            event_type=EVENT_AGENT_STEP,
+            agent=_specialist["name"] if _specialist else intent,
+            input_data={"target": target or "", "has_specialist": _specialist is not None},
+        ))
+
+        if _specialist:
+            _ask = self._get_agent("ask", session_id)
+            import asyncio as _aio2
+            _sp = _specialist
+            result = await _aio2.get_event_loop().run_in_executor(
+                None,
+                lambda: {
+                    "answer": _ask.ask_llm(
+                        system_prompt=_sp["system_prompt"],
+                        user_message=message,
+                        graph_context={},
+                        model=model,
+                        include_history=True,
+                    ),
+                    "agent": _sp["name"],
+                    "specialist_id": _sp["agent_id"],
+                    "domain": _sp["domain"],
+                }
+            )
+        else:
+            agent  = self._get_agent(intent, session_id)
+            result = await self._run_agent(agent, intent, message, target, model)
 
         # ── 7. Self-reflection on answer ──────────────────────────────────
         answer = result.get("answer", "")
@@ -222,10 +272,19 @@ class DelegationManager:
             agent=result.get("agent", intent), intent=intent
         )
 
-        result["intent"]          = intent
-        result["session_id"]      = session_id
-        result["router_method"]   = route_method
+        result["intent"]            = intent
+        result["session_id"]        = session_id
+        result["router_method"]     = route_method
         result["router_confidence"] = round(confidence, 2)
+        result["trace_id"]          = trace_id
+
+        # Trace: complete
+        tracer.log(__import__("app.core.trace_manager", fromlist=["TraceEvent"]).TraceEvent(
+            trace_id=trace_id, session_id=session_id,
+            event_type=EVENT_COMPLETE,
+            agent=result.get("agent", intent),
+            output_data={"answer_len": len(result.get("answer",""))},
+        ))
         return result
 
     # ── Streaming execute ─────────────────────────────────────────────────────

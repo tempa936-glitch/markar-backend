@@ -1,15 +1,17 @@
+"""Graph module - Dependency graph building and analysis."""
+
 from .store import GraphStore
 from .neo4j_store import Neo4jStore
-
-"""Graph module - Dependency graph building and analysis."""
 
 from .builder import (
     DependencyGraphBuilder,
     DependencyNode,
-    CallRelation
+    CallRelation,
 )
 from .analyzer import GraphAnalyzer
-from .store import GraphStore
+
+# NEW — Deep AST
+from .deep_graph_builder import DeepGraphBuilder
 
 __all__ = [
     'DependencyGraphBuilder',
@@ -18,4 +20,5 @@ __all__ = [
     'GraphAnalyzer',
     'GraphStore',
     'Neo4jStore',
+    'DeepGraphBuilder',
 ]

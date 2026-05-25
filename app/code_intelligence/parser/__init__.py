@@ -16,17 +16,28 @@ from .universal_parser import (
     LANG_QUERIES,
 )
 
+from .deep_ast_analyzer import (
+    DeepRepositoryAnalyzer,
+    DeepFunctionAnalysis,
+    PythonDeepAnalyzer,
+    PythonDeepFileAnalyzer,
+    TSDeepFileAnalyzer,
+)
+
 __all__ = [
-    # Original (Python-only)
     "CodeParser",
     "RepositoryParser",
     "Function",
     "ClassInfo",
     "ImportInfo",
     "FileInfo",
-    # New (multi-language)
     "UniversalParser",
     "ParsedFile",
     "EXTENSION_MAP",
     "LANG_QUERIES",
+    "DeepRepositoryAnalyzer",
+    "DeepFunctionAnalysis",
+    "PythonDeepAnalyzer",
+    "PythonDeepFileAnalyzer",
+    "TSDeepFileAnalyzer",
 ]

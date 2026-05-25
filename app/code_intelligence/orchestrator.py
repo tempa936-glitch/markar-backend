@@ -9,8 +9,11 @@ from typing import Dict, List, Optional
 from enum import Enum
 
 from .parser import RepositoryParser
-from .graph import DependencyGraphBuilder,  GraphAnalyzer, GraphStore, Neo4jStore
+from .graph import DependencyGraphBuilder, GraphAnalyzer, GraphStore, Neo4jStore
 from app.agents.impact_agent import ImpactAnalysisAgent
+
+# ── Deep AST import ─────────────────────────────────────────────────────────
+from app.code_intelligence.graph.deep_graph_builder import DeepGraphBuilder
 
 
 class QueryType(str, Enum):
@@ -25,8 +28,7 @@ class QueryType(str, Enum):
 class CodeIntelligenceOrchestrator:
 
     def __init__(self, repo_path: str, graph_storage_path: str = None, repo_id: str = None):
-        self.repo_path   = repo_path
-        # Bug fix: graph storage hamesha repo ke andar hogi, relative path nahi
+        self.repo_path = repo_path
         import os
         storage = graph_storage_path or os.path.join(repo_path, ".code_graph")
         if os.getenv("NEO4J_URI") and repo_id:
@@ -38,20 +40,20 @@ class CodeIntelligenceOrchestrator:
 
         self.agent       = ImpactAnalysisAgent(self.store)
         self.initialized = False
-        self._analyzer: Optional[GraphAnalyzer] = None        
+        self._analyzer: Optional[GraphAnalyzer] = None
 
     def initialize(self) -> Dict:
         import time
         t0 = time.time()
         print(f"Initializing Markar Intelligence for: {self.repo_path}")
 
-        # ── Step 1: Python files via existing ast parser (parallel) ────────
+        # ── Step 1: Python files via existing ast parser ────────────────────
         t1 = time.time()
         parser = RepositoryParser(self.repo_path)
         parser.parse()
         print(f"  Parsed {len(parser.files)} Python files (ast) [{time.time()-t1:.1f}s]")
 
-        # ── Step 2: All other languages via UniversalParser (parallel) ─────
+        # ── Step 2: All other languages via UniversalParser ─────────────────
         t2 = time.time()
         try:
             from .parser.universal_parser import UniversalParser
@@ -79,11 +81,21 @@ class CodeIntelligenceOrchestrator:
         t4 = time.time()
         self.store.save(nodes)
         print(f"  Graph stored [{time.time()-t4:.1f}s]")
-        print(f"  ✓ Total initialization time: {time.time()-t0:.1f}s")
 
-        # ← CHANGE 1: pass repo_path so analyzer can read file sizes
         self._analyzer = GraphAnalyzer(nodes, repo_path=self.repo_path)
         self.initialized = True
+
+        # ── Step 5: Deep AST enrichment ─────────────────────────────────────
+        t5 = time.time()
+        try:
+            deep_builder = DeepGraphBuilder(self.store, self.repo_path)
+            deep_summary = deep_builder.run()
+            print(f"  Deep AST done: {deep_summary} [{time.time()-t5:.1f}s]")
+        except Exception as e:
+            print(f"  [DeepAST] Skipped (non-critical): {e}")
+        # ── End Deep AST ─────────────────────────────────────────────────────
+
+        print(f"  ✓ Total initialization time: {time.time()-t0:.1f}s")
 
         return {
             "status": "initialized",
@@ -92,7 +104,6 @@ class CodeIntelligenceOrchestrator:
             "stats":  self.store.get_stats(),
         }
 
-    # ← CHANGE 2: new method — this is what /status now calls
     def get_rich_analysis(self) -> Dict:
         """File sizes, danger imports, state issues, hotspots, issues_summary."""
         if not self.initialized or not self._analyzer:

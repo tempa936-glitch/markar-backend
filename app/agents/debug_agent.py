@@ -4,9 +4,10 @@ Root cause trace karo Neo4j se — deep analysis.
 """
 from typing import Dict
 from .base_agent import BaseAgent
+from app.agents.deep_context_mixin import DeepContextMixin
 
 
-class DebugAgent(BaseAgent):
+class DebugAgent(DeepContextMixin,BaseAgent):
 
     SYSTEM_PROMPT = """
 Tu ek expert senior software engineer aur debugger hai.
@@ -86,7 +87,7 @@ RULES:
         graph_data = self._collect_debug_data(target)
 
         # ── Graph data empty hai? Real file content padhke supplement karo ──
-        graph_data = self._enrich_with_file_content(graph_data, target)
+        graph_data = self._enrich_with_deep_context(graph_data, target)
 
         answer = self.ask_llm(
             system_prompt=self.SYSTEM_PROMPT,
