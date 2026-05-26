@@ -23,6 +23,7 @@ def init_llm_settings_db():
             openai_key       TEXT,
             anthropic_key    TEXT,
             openrouter_key   TEXT,
+            gemini_key       TEXT,
             preferred_model  TEXT DEFAULT 'meta-llama/llama-3.3-70b-instruct:free',
             router_model     TEXT DEFAULT 'mistralai/mistral-7b-instruct:free',
             use_own_keys     INTEGER DEFAULT 0,
@@ -30,6 +31,13 @@ def init_llm_settings_db():
             updated_at       TEXT NOT NULL
         );
 
+        """)
+        try:
+            conn.execute("ALTER TABLE user_llm_settings ADD COLUMN gemini_key TEXT;")
+        except Exception:
+            pass
+        
+        conn.executescript("""
         CREATE TABLE IF NOT EXISTS llm_usage (
             id                INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id           TEXT NOT NULL,
@@ -65,19 +73,23 @@ def get_user_llm_settings(user_id: str) -> Dict:
         row = conn.execute(
             "SELECT * FROM user_llm_settings WHERE user_id = ?", (user_id,)
         ).fetchone()
+        
     if not row:
         return {
             "user_id": user_id,
-            "openai_key": None, "anthropic_key": None, "openrouter_key": None,
+            "openai_key": None, "anthropic_key": None, "openrouter_key": None, "gemini_key": None,
             "preferred_model": "meta-llama/llama-3.3-70b-instruct:free",
             "router_model": "mistralai/mistral-7b-instruct:free",
             "use_own_keys": False,
         }
+        
+    row_dict = dict(row)
     return {
         "user_id": row["user_id"],
         "openai_key": _mask_key(row["openai_key"]),
         "anthropic_key": _mask_key(row["anthropic_key"]),
         "openrouter_key": _mask_key(row["openrouter_key"]),
+        "gemini_key": _mask_key(row_dict.get("gemini_key")),
         "preferred_model": row["preferred_model"],
         "router_model": row["router_model"],
         "use_own_keys": bool(row["use_own_keys"]),
@@ -90,20 +102,25 @@ def get_user_llm_keys(user_id: str) -> Dict:
         row = conn.execute(
             "SELECT * FROM user_llm_settings WHERE user_id = ?", (user_id,)
         ).fetchone()
+        
     if not row:
         return {
             "openai_key": os.getenv("OPENAI_API_KEY", ""),
             "anthropic_key": os.getenv("ANTHROPIC_API_KEY", ""),
             "openrouter_key": os.getenv("OPENROUTER_API_KEY", ""),
+            "gemini_key": os.getenv("GEMINI_API_KEY", ""),
             "preferred_model": os.getenv("MARKAR_LLM_MODEL", "meta-llama/llama-3.3-70b-instruct:free"),
             "router_model": os.getenv("MARKAR_ROUTER_MODEL", "mistralai/mistral-7b-instruct:free"),
             "use_own_keys": False,
         }
+        
+    row_dict = dict(row)
     use_own = bool(row["use_own_keys"])
     return {
         "openai_key": row["openai_key"] if use_own else os.getenv("OPENAI_API_KEY", ""),
         "anthropic_key": row["anthropic_key"] if use_own else os.getenv("ANTHROPIC_API_KEY", ""),
         "openrouter_key": row["openrouter_key"] if use_own else os.getenv("OPENROUTER_API_KEY", ""),
+        "gemini_key": row_dict.get("gemini_key") if use_own else os.getenv("GEMINI_API_KEY", ""),
         "preferred_model": row["preferred_model"],
         "router_model": row["router_model"],
         "use_own_keys": use_own,
@@ -111,7 +128,7 @@ def get_user_llm_keys(user_id: str) -> Dict:
 
 
 def save_user_llm_settings(user_id: str, openai_key=None, anthropic_key=None,
-                            openrouter_key=None, preferred_model=None,
+                            openrouter_key=None, gemini_key=None, preferred_model=None,
                             router_model=None, use_own_keys=None) -> Dict:
     now = datetime.utcnow().isoformat()
     with _get_conn() as conn:
@@ -122,7 +139,7 @@ def save_user_llm_settings(user_id: str, openai_key=None, anthropic_key=None,
             updates, params = [], []
             for col, val in [
                 ("openai_key", openai_key), ("anthropic_key", anthropic_key),
-                ("openrouter_key", openrouter_key), ("preferred_model", preferred_model),
+                ("openrouter_key", openrouter_key), ("gemini_key", gemini_key), ("preferred_model", preferred_model),
                 ("router_model", router_model),
             ]:
                 if val is not None:
@@ -141,12 +158,12 @@ def save_user_llm_settings(user_id: str, openai_key=None, anthropic_key=None,
         else:
             conn.execute("""
                 INSERT INTO user_llm_settings
-                    (user_id, openai_key, anthropic_key, openrouter_key,
+                    (user_id, openai_key, anthropic_key, openrouter_key, gemini_key,
                      preferred_model, router_model, use_own_keys, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
             """, (
                 user_id,
-                openai_key or None, anthropic_key or None, openrouter_key or None,
+                openai_key or None, anthropic_key or None, openrouter_key or None, gemini_key or None,
                 preferred_model or "meta-llama/llama-3.3-70b-instruct:free",
                 router_model or "mistralai/mistral-7b-instruct:free",
                 1 if use_own_keys else 0, now, now,
@@ -235,6 +252,8 @@ def get_user_usage_stats(user_id: str, days: int = 30) -> Dict:
 
 
 AVAILABLE_MODELS = [
+    {"id": "google/gemini-1.5-flash",                "name": "Gemini 1.5 Flash",      "provider": "Google",    "free": False},
+    {"id": "google/gemini-1.5-pro",                  "name": "Gemini 1.5 Pro",        "provider": "Google",    "free": False},
     {"id": "meta-llama/llama-3.3-70b-instruct:free", "name": "Llama 3.3 70B",        "provider": "Meta",      "free": True},
     {"id": "deepseek/deepseek-r1:free",              "name": "DeepSeek R1",           "provider": "DeepSeek",  "free": True},
     {"id": "mistralai/mistral-small-3.1-24b-instruct:free", "name": "Mistral Small", "provider": "Mistral",   "free": True},
@@ -244,7 +263,6 @@ AVAILABLE_MODELS = [
     {"id": "openai/gpt-4o-mini",                     "name": "GPT-4o Mini",           "provider": "OpenAI",    "free": False},
     {"id": "anthropic/claude-3-5-haiku",             "name": "Claude 3.5 Haiku",      "provider": "Anthropic", "free": False},
     {"id": "anthropic/claude-3-5-sonnet",            "name": "Claude 3.5 Sonnet",     "provider": "Anthropic", "free": False},
-    {"id": "google/gemini-2.0-flash",                "name": "Gemini 2.0 Flash",      "provider": "Google",    "free": False},
     {"id": "deepseek/deepseek-chat-v3-0324",         "name": "DeepSeek V3",           "provider": "DeepSeek",  "free": False},
     {"id": "mistralai/mistral-large",                "name": "Mistral Large",         "provider": "Mistral",   "free": False},
 ]

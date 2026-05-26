@@ -40,6 +40,7 @@ class LLMSettingsRequest(BaseModel):
     openai_key:      Optional[str] = None
     anthropic_key:   Optional[str] = None
     openrouter_key:  Optional[str] = None
+    gemini_key:      Optional[str] = None
     preferred_model: Optional[str] = None
     router_model:    Optional[str] = None
     use_own_keys:    Optional[bool] = None
@@ -83,6 +84,7 @@ async def update_llm_settings(
         openai_key=req.openai_key,
         anthropic_key=req.anthropic_key,
         openrouter_key=req.openrouter_key,
+        gemini_key=req.gemini_key,
         preferred_model=req.preferred_model,
         router_model=req.router_model,
         use_own_keys=req.use_own_keys,
@@ -110,6 +112,7 @@ async def clear_own_keys(
         openai_key="",
         anthropic_key="",
         openrouter_key="",
+        gemini_key="",
         use_own_keys=False,
     )
 

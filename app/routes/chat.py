@@ -107,7 +107,7 @@ async def chat(
     from app.core.auth import check_permission, get_intent_permission
     from app.agents.auto_router import get_router
 
-    route_result  = await get_router().route(req.message, req.model)
+    route_result  = await get_router().route(req.message, req.model, user.user_id)
     intent        = req.intent or route_result["intent"]
     required_perm = get_intent_permission(intent)
     if not check_permission(user, required_perm, req.repo_id):
@@ -226,7 +226,7 @@ async def chat_async(
         )
 
     from app.agents.auto_router import get_router
-    route_result = await get_router().route(req.message, req.model)
+    route_result = await get_router().route(req.message, req.model, user.user_id)
     intent       = req.intent or route_result["intent"]
 
     # ✅ Task queue mein dalne se PEHLE credit deduct karo

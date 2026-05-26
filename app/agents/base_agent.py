@@ -118,31 +118,54 @@ class BaseAgent:
         - Conversation history injection
         - Exponential backoff retry
         - Structured error handling
+        - Dynamic Provider Routing
         """
         import httpx
 
         try:
             from app.core.llm_settings import get_user_llm_keys
             user_keys = get_user_llm_keys(self.user_id)
-            api_key = user_keys.get("openrouter_key") or os.getenv("OPENROUTER_API_KEY", "")
-            
-            # If model is not provided or it's just a default fallback like "openrouter/free"
-            # we should use the user's preferred_model if available.
-            if not model or model == "openrouter/free":
-                model = user_keys.get("preferred_model")
+            selected_model = model or os.getenv("MARKAR_LLM_MODEL", "mistralai/mistral-7b-instruct:free")
+            if selected_model == "openrouter/free":
+                selected_model = "meta-llama/llama-3.3-70b-instruct:free"
+
+            if user_keys.get("use_own_keys"):
+                if selected_model.startswith("openai/"):
+                    api_key = user_keys.get("openai_key")
+                    url = "https://api.openai.com/v1/chat/completions"
+                    provider = "openai"
+                elif selected_model.startswith("anthropic/"):
+                    api_key = user_keys.get("anthropic_key")
+                    url = "https://api.anthropic.com/v1/messages"
+                    provider = "anthropic"
+                elif selected_model.startswith("google/") or selected_model.startswith("gemini"):
+                    api_key = user_keys.get("gemini_key")
+                    provider = "gemini"
+                    gemini_model = selected_model.replace("google/", "")
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={api_key}"
+                else:
+                    api_key = user_keys.get("openrouter_key")
+                    url = "https://openrouter.ai/api/v1/chat/completions"
+                    provider = "openrouter"
+            else:
+                api_key = os.getenv("OPENROUTER_API_KEY", "")
+                url = "https://openrouter.ai/api/v1/chat/completions"
+                provider = "openrouter"
                 
-            # If use_own_keys is true, always respect user's preferred_model unless the frontend
-            # explicitly passed a different specific model (not the default free one).
-            if user_keys.get("use_own_keys") and (not model or model == "openrouter/free"):
-                model = user_keys.get("preferred_model")
-                
+            if not api_key and provider != "openrouter":
+                api_key = user_keys.get("openrouter_key") or os.getenv("OPENROUTER_API_KEY", "")
+                url = "https://openrouter.ai/api/v1/chat/completions"
+                provider = "openrouter"
+
         except Exception:
             api_key = os.getenv("OPENROUTER_API_KEY", "")
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            provider = "openrouter"
+            selected_model = model or "meta-llama/llama-3.3-70b-instruct:free"
 
         if not api_key:
             return self._fallback_response(graph_context)
 
-        # Build context — trim if too large
         context_text  = self._format_context_trimmed(graph_context)
         history_text  = ""
         if include_history and self.conv_store and self.session_id:
@@ -157,52 +180,83 @@ class BaseAgent:
             full_user_content += f"=== CODEBASE KNOWLEDGE GRAPH ===\n{context_text}\n=================================\n\n"
         full_user_content += f"User: {user_message}"
 
-        selected_model = model or os.getenv("MARKAR_LLM_MODEL", "mistralai/mistral-7b-instruct:free")
-
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": full_user_content},
         ]
 
-        # Retry with exponential backoff
+        if provider == "anthropic":
+            headers = {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            }
+            json_body = {
+                "model": selected_model.replace("anthropic/", ""),
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": full_user_content}],
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+        elif provider == "gemini":
+            headers = {
+                "Content-Type": "application/json"
+            }
+            json_body = {
+                "systemInstruction": { "parts": [{"text": system_prompt}] },
+                "contents": [
+                    {"role": "user", "parts": [{"text": full_user_content}]}
+                ],
+                "generationConfig": {
+                    "temperature": temperature,
+                    "maxOutputTokens": max_tokens
+                }
+            }
+        else:
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type":  "application/json",
+            }
+            if provider == "openrouter":
+                headers["HTTP-Referer"] = "https://markarai.netlify.app"
+                headers["X-Title"] = "Markar.ai"
+            json_body = {
+                "model": selected_model.replace("openai/", "") if provider == "openai" else selected_model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+
         last_error = None
         for attempt in range(retries):
             try:
                 async with httpx.AsyncClient(timeout=90.0) as client:
-                    response = await client.post(
-                        "https://openrouter.ai/api/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {api_key}",
-                            "Content-Type":  "application/json",
-                            "HTTP-Referer":  "https://markarai.netlify.app",
-                            "X-Title":       "Markar.ai",
-                        },
-                        json={
-                            "model":       selected_model,
-                            "messages":    messages,
-                            "max_tokens":  max_tokens,
-                            "temperature": temperature,
-                        },
-                    )
+                    response = await client.post(url, headers=headers, json=json_body)
 
                 data = response.json()
                 if response.status_code != 200:
                     raise ValueError(f"LLM API error {response.status_code}: {data}")
 
-                text = data["choices"][0]["message"]["content"]
+                if provider == "anthropic":
+                    text = data.get("content", [{}])[0].get("text", "")
+                elif provider == "gemini":
+                    text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                else:
+                    text = data["choices"][0]["message"]["content"]
+                    
                 text = ResponseFormatter.clean(text)
                 if not text:
                     return self._fallback_response(graph_context)
+                    
                 print(f"[LLM] OK — model={selected_model} attempt={attempt+1}")
                 try:
-                    import time as _time
                     from app.core.llm_settings import track_usage
                     usage = data.get("usage", {})
                     track_usage(
                         user_id=self.user_id,
                         model=selected_model,
-                        prompt_tokens=usage.get("prompt_tokens", 0),
-                        completion_tokens=usage.get("completion_tokens", 0),
+                        prompt_tokens=usage.get("prompt_tokens", usage.get("input_tokens", 0)),
+                        completion_tokens=usage.get("completion_tokens", usage.get("output_tokens", 0)),
                         session_id=self.session_id,
                         repo_id=self.repo_id,
                         agent=self.__class__.__name__,
@@ -217,6 +271,7 @@ class BaseAgent:
                 last_error = e
                 wait = 2 ** attempt
                 print(f"[LLM] Attempt {attempt+1} failed: {e} — retrying in {wait}s")
+                import asyncio
                 await asyncio.sleep(wait)
 
         print(f"[LLM] All {retries} retries failed: {last_error}")
@@ -242,16 +297,43 @@ class BaseAgent:
         try:
             from app.core.llm_settings import get_user_llm_keys
             user_keys = get_user_llm_keys(self.user_id)
-            api_key = user_keys.get("openrouter_key") or os.getenv("OPENROUTER_API_KEY", "")
-            
-            if not model or model == "openrouter/free":
-                model = user_keys.get("preferred_model")
+            selected_model = model or os.getenv("MARKAR_LLM_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+            if selected_model == "openrouter/free":
+                selected_model = "meta-llama/llama-3.3-70b-instruct:free"
+
+            if user_keys.get("use_own_keys"):
+                if selected_model.startswith("openai/"):
+                    api_key = user_keys.get("openai_key")
+                    url = "https://api.openai.com/v1/chat/completions"
+                    provider = "openai"
+                elif selected_model.startswith("anthropic/"):
+                    api_key = user_keys.get("anthropic_key")
+                    url = "https://api.anthropic.com/v1/messages"
+                    provider = "anthropic"
+                elif selected_model.startswith("google/") or selected_model.startswith("gemini"):
+                    api_key = user_keys.get("gemini_key")
+                    provider = "gemini"
+                    gemini_model = selected_model.replace("google/", "")
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={api_key}"
+                else:
+                    api_key = user_keys.get("openrouter_key")
+                    url = "https://openrouter.ai/api/v1/chat/completions"
+                    provider = "openrouter"
+            else:
+                api_key = os.getenv("OPENROUTER_API_KEY", "")
+                url = "https://openrouter.ai/api/v1/chat/completions"
+                provider = "openrouter"
                 
-            if user_keys.get("use_own_keys") and (not model or model == "openrouter/free"):
-                model = user_keys.get("preferred_model")
-                
+            if not api_key and provider != "openrouter":
+                api_key = user_keys.get("openrouter_key") or os.getenv("OPENROUTER_API_KEY", "")
+                url = "https://openrouter.ai/api/v1/chat/completions"
+                provider = "openrouter"
+
         except Exception:
             api_key = os.getenv("OPENROUTER_API_KEY", "")
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            provider = "openrouter"
+            selected_model = model or "meta-llama/llama-3.3-70b-instruct:free"
 
         if not api_key:
             yield StreamChunk(content=self._fallback_response(graph_context), done=True)
@@ -271,49 +353,108 @@ class BaseAgent:
             full_user_content += f"=== CODEBASE KNOWLEDGE GRAPH ===\n{context_text}\n=================================\n\n"
         full_user_content += f"User: {user_message}"
 
-        selected_model = model or os.getenv("MARKAR_LLM_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
-        if selected_model == "openrouter/free":
-            selected_model = "meta-llama/llama-3.3-70b-instruct:free"
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": full_user_content},
+        ]
 
-        print(f"[LLM Stream] Using model={selected_model} for user={self.user_id}")
+        if provider == "anthropic":
+            headers = {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            }
+            json_body = {
+                "model": selected_model.replace("anthropic/", ""),
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": full_user_content}],
+                "max_tokens": 2048,
+                "temperature": 0.2,
+                "stream": True,
+            }
+        elif provider == "gemini":
+            headers = {
+                "Content-Type": "application/json"
+            }
+            json_body = {
+                "systemInstruction": { "parts": [{"text": system_prompt}] },
+                "contents": [
+                    {"role": "user", "parts": [{"text": full_user_content}]}
+                ],
+                "generationConfig": {
+                    "temperature": 0.2,
+                    "maxOutputTokens": 2048
+                }
+            }
+        else:
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type":  "application/json",
+            }
+            if provider == "openrouter":
+                headers["HTTP-Referer"] = "https://markarai.netlify.app"
+                headers["X-Title"] = "Markar.ai"
+            json_body = {
+                "model": selected_model.replace("openai/", "") if provider == "openai" else selected_model,
+                "messages": messages,
+                "max_tokens": 2048,
+                "temperature": 0.2,
+                "stream": True,
+            }
+
+        print(f"[LLM Stream] Using model={selected_model} (provider={provider}) for user={self.user_id}")
 
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
-                async with client.stream(
-                    "POST",
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type":  "application/json",
-                        "HTTP-Referer":  "https://markarai.netlify.app",
-                        "X-Title":       "Markar.ai",
-                    },
-                    json={
-                        "model":    selected_model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user",   "content": full_user_content},
-                        ],
-                        "max_tokens":  2048,
-                        "temperature": 0.2,
-                        "stream":      True,
-                    },
-                ) as stream_response:
+                async with client.stream("POST", url, headers=headers, json=json_body) as stream_response:
                     async for line in stream_response.aiter_lines():
-                        if not line or not line.startswith("data: "):
+                        if not line:
                             continue
-                        raw = line[6:]
-                        if raw.strip() == "[DONE]":
-                            yield StreamChunk(content="", done=True)
-                            return
-                        try:
-                            data  = json.loads(raw)
-                            delta = data["choices"][0]["delta"].get("content", "")
-                            delta = ResponseFormatter.clean(delta)
-                            if delta:
-                                yield StreamChunk(content=delta, done=False)
-                        except Exception:
-                            continue
+                        
+                        if provider == "anthropic":
+                            if line.startswith("data: "):
+                                raw = line[6:]
+                                try:
+                                    data = json.loads(raw)
+                                    if data.get("type") == "content_block_delta":
+                                        delta = data["delta"].get("text", "")
+                                        delta = ResponseFormatter.clean(delta)
+                                        if delta:
+                                            yield StreamChunk(content=delta, done=False)
+                                except Exception:
+                                    continue
+                        elif provider == "gemini":
+                            if line.startswith("data: "):
+                                raw = line[6:]
+                                if raw.strip() == "":
+                                    continue
+                                try:
+                                    data = json.loads(raw)
+                                    candidates = data.get("candidates", [])
+                                    if candidates:
+                                        parts = candidates[0].get("content", {}).get("parts", [])
+                                        if parts:
+                                            delta = parts[0].get("text", "")
+                                            delta = ResponseFormatter.clean(delta)
+                                            if delta:
+                                                yield StreamChunk(content=delta, done=False)
+                                except Exception:
+                                    continue
+                        else:
+                            if not line.startswith("data: "):
+                                continue
+                            raw = line[6:]
+                            if raw.strip() == "[DONE]":
+                                yield StreamChunk(content="", done=True)
+                                return
+                            try:
+                                data  = json.loads(raw)
+                                delta = data["choices"][0]["delta"].get("content", "")
+                                delta = ResponseFormatter.clean(delta)
+                                if delta:
+                                    yield StreamChunk(content=delta, done=False)
+                            except Exception:
+                                continue
 
         except Exception as e:
             print(f"[LLM Stream] Failed: {e}")
