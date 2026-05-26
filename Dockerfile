@@ -27,6 +27,7 @@ WORKDIR /app
 # Runtime system deps only
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
+    git \
     curl \
     && rm -rf /var/lib/apt/lists/*
 

@@ -5,3 +5,7 @@ __pycache__/
 env/
 .env
 .pytest_cache/
+
+# Cloned repos — ignore karo
+markar_*/
+.code_graph/
