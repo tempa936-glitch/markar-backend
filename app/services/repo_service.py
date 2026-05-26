@@ -810,12 +810,15 @@ def _file_detail_neo4j(store, file_path: str) -> dict:
             # Functions with deep data
             fn_rows = s.run("""
                 MATCH (fn:CodeNode {repo_id:$r, node_type:'function', file_path:$fp})
-                OPTIONAL MATCH ()-[:DEPENDS_ON]->(fn)
-                WITH fn, count(*) AS dependents
+                OPTIONAL MATCH (caller:CodeNode {repo_id:$r})-[:DEPENDS_ON]->(fn)
+                WITH fn, count(DISTINCT caller) AS dependents,
+                     collect(DISTINCT caller.name)[..5] AS caller_names,
+                     collect(DISTINCT caller.file_path)[..5] AS caller_files
                 RETURN fn.name              AS name,
                        fn.line_no           AS line,
                        dependents,
                        fn.deep_risk_level   AS deep_risk,
+                       fn.deep_risk_level   AS risk,
                        fn.deep_complexity   AS complexity,
                        fn.deep_branch_count AS branches,
                        fn.deep_raises       AS raises,
@@ -824,10 +827,24 @@ def _file_detail_neo4j(store, file_path: str) -> dict:
                        fn.deep_logic_lines  AS logic_lines,
                        fn.deep_max_depth    AS max_depth,
                        fn.deep_return_type  AS return_type,
-                       fn.deep_data_inputs  AS inputs
+                       fn.deep_data_inputs  AS inputs,
+                       caller_names         AS called_by,
+                       caller_files         AS called_by_files
                 ORDER BY dependents DESC
             """, r=store.repo_id, fp=file_path)
             functions = [dict(row) for row in fn_rows]
+            # called_by ko proper format mein convert karo
+            for fn in functions:
+                names = fn.get("called_by") or []
+                files = fn.get("called_by_files") or []
+                fn["called_by"] = [
+                    {"name": n, "file": f}
+                    for n, f in zip(names, files)
+                    if n
+                ]
+                # risk field ensure karo
+                if not fn.get("risk"):
+                    fn["risk"] = fn.get("deep_risk") or "LOW"
 
             # Branches for each function
             branch_rows = s.run("""

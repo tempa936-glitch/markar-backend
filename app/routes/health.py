@@ -1,6 +1,16 @@
 """
 Markar Intelligence — All API Routes
 Fixed: no duplicate router, git clone support, rich analysis.
+DEBUG ENDPOINT — Sirf testing ke liye
+Neo4j mein jo bhi store hai — sab Postman mein dikha do.
+Delete Endpoints — Neo4j + SQLite dono ek saath clean karo
+===========================================================
+health.py ke end mein add karo yeh poora block.
+ 
+3 endpoints hain:
+  1. DELETE /api/code-intelligence/repo/{repo_id}  — ek repo delete
+  2. DELETE /api/code-intelligence/repos/all        — saari repos delete
+  3. GET    /api/code-intelligence/storage/stats    — kitna space use ho raha hai
 """
 
 from fastapi import APIRouter, HTTPException, Query, Depends, Header, Request
@@ -11,6 +21,7 @@ import os, shutil, tempfile, hashlib
 from app.code_intelligence import CodeIntelligenceOrchestrator, QueryType, WorkflowExecutor
 from app.dependencies.code_intelligence import get_orchestrator, set_orchestrator
 from fastapi.responses import StreamingResponse
+from app.services.repo_service import get_orchestrator_by_id
 
 from app.services.repo_service import (
     start_initialization,
@@ -360,3 +371,465 @@ async def reconnect_repo(repo_id: str):
     from app.services.repo_service import reconnect_repo
     result = reconnect_repo(repo_id)
     return {"status": "success", "data": result}
+
+@ci_router.get("/debug/{repo_id}/neo4j")
+async def debug_neo4j_full(repo_id: str):
+    """
+    Testing endpoint — Neo4j mein sab kuch dikhao.
+    
+    GET /api/code-intelligence/debug/{repo_id}/neo4j
+    GET /api/code-intelligence/debug/{repo_id}/neo4j?section=deep_ast
+    GET /api/code-intelligence/debug/{repo_id}/neo4j?section=git
+    GET /api/code-intelligence/debug/{repo_id}/neo4j?section=graph
+    GET /api/code-intelligence/debug/{repo_id}/neo4j?section=branches
+    GET /api/code-intelligence/debug/{repo_id}/neo4j?section=exceptions
+    GET /api/code-intelligence/debug/{repo_id}/neo4j?section=functions
+    GET /api/code-intelligence/debug/{repo_id}/neo4j?section=combined
+    """
+    from app.services.repo_service import get_orchestrator_by_id
+    from fastapi import Query as FQuery
+ 
+    orch = get_orchestrator_by_id(repo_id)
+    if not orch:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Repo '{repo_id}' ready nahi hai. Pehle initialize karo."
+        )
+ 
+    store = orch.store
+ 
+    from app.code_intelligence.graph.neo4j_store import Neo4jStore
+    if not isinstance(store, Neo4jStore):
+        raise HTTPException(
+            status_code=400,
+            detail="Yeh endpoint sirf Neo4j repos ke liye hai."
+        )
+ 
+    try:
+        driver = store._connect()
+ 
+        with driver.session() as s:
+ 
+            # ── 1. Basic stats ────────────────────────────────────────────
+            stats_row = s.run("""
+                MATCH (n:CodeNode {repo_id:$r})
+                RETURN
+                    count(n) AS total_nodes,
+                    sum(CASE WHEN n.node_type = 'file'     THEN 1 ELSE 0 END) AS files,
+                    sum(CASE WHEN n.node_type = 'function' THEN 1 ELSE 0 END) AS functions,
+                    sum(CASE WHEN n.node_type = 'class'    THEN 1 ELSE 0 END) AS classes
+            """, r=repo_id).single()
+            stats = dict(stats_row) if stats_row else {}
+ 
+            # ── 2. Deep AST summary ───────────────────────────────────────
+            deep_row = s.run("""
+                MATCH (n:CodeNode {repo_id:$r, node_type:'function'})
+                WHERE n.deep_complexity IS NOT NULL
+                RETURN
+                    count(n)                                                            AS analyzed,
+                    avg(n.deep_complexity)                                              AS avg_complexity,
+                    max(n.deep_complexity)                                              AS max_complexity,
+                    sum(CASE WHEN n.deep_risk_level = 'CRITICAL' THEN 1 ELSE 0 END)   AS critical,
+                    sum(CASE WHEN n.deep_risk_level = 'HIGH'     THEN 1 ELSE 0 END)   AS high,
+                    sum(CASE WHEN n.deep_risk_level = 'MEDIUM'   THEN 1 ELSE 0 END)   AS medium,
+                    sum(CASE WHEN n.deep_risk_level = 'LOW'      THEN 1 ELSE 0 END)   AS low,
+                    sum(CASE WHEN n.deep_is_async = true THEN 1 ELSE 0 END)            AS async_count,
+                    sum(CASE WHEN n.deep_has_try_except = true THEN 1 ELSE 0 END)      AS try_except_count
+            """, r=repo_id).single()
+            deep_summary = dict(deep_row) if deep_row else {}
+            if "avg_complexity" in deep_summary and deep_summary["avg_complexity"]:
+                deep_summary["avg_complexity"] = round(deep_summary["avg_complexity"], 2)
+ 
+            # ── 3. Top 10 CRITICAL/HIGH functions ────────────────────────
+            hotspot_rows = s.run("""
+                MATCH (n:CodeNode {repo_id:$r, node_type:'function'})
+                WHERE n.deep_risk_level IN ['CRITICAL','HIGH']
+                RETURN n.name              AS name,
+                       n.file_path         AS file,
+                       n.line_no           AS line,
+                       n.deep_risk_level   AS risk,
+                       n.deep_complexity   AS complexity,
+                       n.deep_max_depth    AS nesting,
+                       n.deep_branch_count AS branches,
+                       n.deep_raises       AS raises,
+                       n.deep_risk_reasons AS reasons,
+                       n.deep_logic_lines  AS logic_lines,
+                       n.deep_is_async     AS is_async
+                ORDER BY
+                    CASE n.deep_risk_level WHEN 'CRITICAL' THEN 0 ELSE 1 END,
+                    n.deep_complexity DESC
+                LIMIT 10
+            """, r=repo_id)
+            hotspots = [dict(r) for r in hotspot_rows]
+ 
+            # ── 4. BranchNodes stats ──────────────────────────────────────
+            branch_stats_row = s.run("""
+                MATCH (b:BranchNode {repo_id:$r})
+                RETURN
+                    count(b) AS total_branches,
+                    sum(CASE WHEN b.leads_raise = true  THEN 1 ELSE 0 END) AS leads_to_raise,
+                    sum(CASE WHEN b.leads_return = true THEN 1 ELSE 0 END) AS leads_to_return,
+                    collect(DISTINCT b.branch_type)[..10] AS branch_types
+            """, r=repo_id).single()
+            branch_stats = dict(branch_stats_row) if branch_stats_row else {}
+ 
+            # ── 5. Sample branches ────────────────────────────────────────
+            branch_rows = s.run("""
+                MATCH (fn:CodeNode {repo_id:$r, node_type:'function'})
+                      -[:HAS_BRANCH]->(b:BranchNode {repo_id:$r})
+                WHERE fn.deep_risk_level IN ['CRITICAL','HIGH']
+                RETURN fn.name        AS function,
+                       fn.file_path   AS file,
+                       b.branch_type  AS branch_type,
+                       b.condition    AS condition,
+                       b.line_no      AS line,
+                       b.leads_raise  AS leads_raise,
+                       b.raises_type  AS raises_type,
+                       b.leads_return AS leads_return
+                ORDER BY b.line_no
+                LIMIT 20
+            """, r=repo_id)
+            sample_branches = [dict(r) for r in branch_rows]
+ 
+            # ── 6. Exception nodes ────────────────────────────────────────
+            exc_rows = s.run("""
+                MATCH (fn:CodeNode {repo_id:$r})-[rel:RAISES]->(ex:ExceptionNode {repo_id:$r})
+                RETURN ex.exc_type   AS exception_type,
+                       count(fn)     AS raised_by_count,
+                       collect(fn.name)[..5] AS raised_by_functions,
+                       sum(CASE WHEN rel.is_caught = false THEN 1 ELSE 0 END) AS uncaught_count
+                ORDER BY raised_by_count DESC
+                LIMIT 15
+            """, r=repo_id)
+            exceptions = [dict(r) for r in exc_rows]
+ 
+            # ── 7. CAN_PROPAGATE relationships ────────────────────────────
+            prop_rows = s.run("""
+                MATCH (fn:CodeNode {repo_id:$r})-[rel:CAN_PROPAGATE]->(ex:ExceptionNode {repo_id:$r})
+                RETURN fn.name     AS function,
+                       ex.exc_type AS exception_type,
+                       rel.callee  AS via_callee,
+                       rel.line_no AS line
+                LIMIT 15
+            """, r=repo_id)
+            propagations = [dict(r) for r in prop_rows]
+ 
+            # ── 8. All relationships count ────────────────────────────────
+            rel_rows = s.run("""
+                MATCH ()-[r]->()
+                WHERE type(r) IN ['DEPENDS_ON','HAS_BRANCH','RAISES','CAN_PROPAGATE']
+                RETURN type(r) AS rel_type, count(r) AS count
+                ORDER BY count DESC
+            """)
+            relationships = [dict(r) for r in rel_rows]
+ 
+            # ── 9. Sample functions with ALL deep properties ──────────────
+            sample_func_rows = s.run("""
+                MATCH (n:CodeNode {repo_id:$r, node_type:'function'})
+                WHERE n.deep_complexity IS NOT NULL
+                RETURN n.name                AS name,
+                       n.file_path           AS file,
+                       n.line_no             AS line,
+                       n.deep_risk_level     AS deep_risk,
+                       n.deep_complexity     AS complexity,
+                       n.deep_max_depth      AS nesting,
+                       n.deep_branch_count   AS branches,
+                       n.deep_loop_count     AS loops,
+                       n.deep_exception_count AS exceptions,
+                       n.deep_raises         AS raises,
+                       n.deep_can_propagate  AS can_propagate,
+                       n.deep_risk_reasons   AS risk_reasons,
+                       n.deep_branch_paths   AS branch_paths,
+                       n.deep_is_async       AS is_async,
+                       n.deep_has_await      AS has_await,
+                       n.deep_has_try_except AS has_try_except,
+                       n.deep_always_returns AS always_returns,
+                       n.deep_can_return_none AS can_return_none,
+                       n.deep_return_type    AS return_type,
+                       n.deep_logic_lines    AS logic_lines,
+                       n.deep_total_lines    AS total_lines,
+                       n.deep_data_inputs    AS inputs,
+                       n.deep_data_returns   AS returns,
+                       n.deep_language       AS language
+                ORDER BY n.deep_complexity DESC
+                LIMIT 10
+            """, r=repo_id)
+            sample_functions = [dict(r) for r in sample_func_rows]
+ 
+            # ── 10. Git history (agar available hai) ──────────────────────
+            git_row = s.run("""
+                MATCH (n:CodeNode {repo_id:$r})
+                WHERE n.git_churn_score IS NOT NULL
+                RETURN
+                    count(n) AS git_tracked,
+                    sum(CASE WHEN n.git_churn_score = 'CRITICAL' THEN 1 ELSE 0 END) AS critical_churn,
+                    sum(CASE WHEN n.git_churn_score = 'HIGH'     THEN 1 ELSE 0 END) AS high_churn,
+                    sum(CASE WHEN n.git_churn_score = 'MEDIUM'   THEN 1 ELSE 0 END) AS medium_churn,
+                    sum(CASE WHEN n.git_churn_score = 'LOW'      THEN 1 ELSE 0 END) AS low_churn
+            """, r=repo_id).single()
+            git_summary = dict(git_row) if git_row else {"git_tracked": 0}
+ 
+            # ── 11. Combined risk (agar available hai) ────────────────────
+            combined_row = s.run("""
+                MATCH (n:CodeNode {repo_id:$r, node_type:'function'})
+                WHERE n.combined_risk IS NOT NULL
+                RETURN
+                    count(n) AS total,
+                    sum(CASE WHEN n.combined_risk = 'CRITICAL' THEN 1 ELSE 0 END) AS critical,
+                    sum(CASE WHEN n.combined_risk = 'HIGH'     THEN 1 ELSE 0 END) AS high,
+                    sum(CASE WHEN n.combined_risk = 'MEDIUM'   THEN 1 ELSE 0 END) AS medium,
+                    sum(CASE WHEN n.combined_risk = 'LOW'      THEN 1 ELSE 0 END) AS low
+            """, r=repo_id).single()
+            combined_summary = dict(combined_row) if combined_row else {"total": 0}
+ 
+        return {
+            "repo_id": repo_id,
+            "status":  "debug_data",
+ 
+            # ── Basic ──────────────────────────────────────────────────────
+            "graph_stats": stats,
+            "relationships": relationships,
+ 
+            # ── Deep AST ───────────────────────────────────────────────────
+            "deep_ast": {
+                "summary":          deep_summary,
+                "hotspots_top10":   hotspots,
+                "branch_stats":     branch_stats,
+                "sample_branches":  sample_branches,
+                "exceptions":       exceptions,
+                "propagations":     propagations,
+            },
+ 
+            # ── Sample functions with all properties ────────────────────────
+            "sample_functions_top10_by_complexity": sample_functions,
+ 
+            # ── Git (agar run hua ho) ───────────────────────────────────────
+            "git_history": git_summary,
+ 
+            # ── Combined risk (Deep AST + Git) ──────────────────────────────
+            "combined_risk": combined_summary,
+        }
+ 
+    except Exception as e:
+        import traceback
+        raise HTTPException(
+            status_code=500,
+            detail={"error": str(e), "traceback": traceback.format_exc()[-500:]}
+        )
+    
+
+# ── 1. Ek specific repo delete karo ────────────────────────────────────────
+@ci_router.delete("/repo/{repo_id}")
+async def delete_repo(repo_id: str):
+    """
+    Ek repo ko Neo4j + SQLite + memory — teeno se delete karo.
+ 
+    DELETE /api/code-intelligence/repo/{repo_id}
+ 
+    Safe hai — sirf us repo ka data delete hoga.
+    """
+    from app.services.repo_service import _jobs, JOBS_DB
+    import sqlite3
+ 
+    result = {
+        "repo_id":        repo_id,
+        "neo4j_deleted":  0,
+        "sqlite_deleted": False,
+        "memory_deleted": False,
+        "errors":         [],
+    }
+ 
+    # ── Step 1: Neo4j se delete ───────────────────────────────────────────
+    try:
+        from app.code_intelligence.graph.neo4j_store import Neo4jStore
+        store = Neo4jStore(repo_id=repo_id)
+        driver = store._connect()
+ 
+        with driver.session() as s:
+            # Saare nodes count karo pehle
+            count = s.run(
+                "MATCH (n {repo_id:$r}) RETURN count(n) AS cnt",
+                r=repo_id
+            ).single()["cnt"]
+ 
+            # Delete karo — relationships automatically delete honge (DETACH)
+            s.run("MATCH (n:CodeNode     {repo_id:$r}) DETACH DELETE n", r=repo_id)
+            s.run("MATCH (n:BranchNode   {repo_id:$r}) DETACH DELETE n", r=repo_id)
+            s.run("MATCH (n:ExceptionNode{repo_id:$r}) DETACH DELETE n", r=repo_id)
+ 
+            result["neo4j_deleted"] = count
+ 
+    except Exception as e:
+        result["errors"].append(f"Neo4j: {str(e)}")
+ 
+    # ── Step 2: SQLite se delete ──────────────────────────────────────────
+    try:
+        with sqlite3.connect(JOBS_DB) as conn:
+            rows = conn.execute(
+                "DELETE FROM persisted_repos WHERE repo_id = ?", (repo_id,)
+            ).rowcount
+        result["sqlite_deleted"] = rows > 0
+    except Exception as e:
+        result["errors"].append(f"SQLite: {str(e)}")
+ 
+    # ── Step 3: Memory (_jobs) se delete ─────────────────────────────────
+    if repo_id in _jobs:
+        del _jobs[repo_id]
+        result["memory_deleted"] = True
+ 
+    result["status"] = "deleted" if not result["errors"] else "partial"
+    return result
+ 
+ 
+# ── 2. Saari repos delete karo ─────────────────────────────────────────────
+@ci_router.delete("/repos/all")
+async def delete_all_repos(confirm: str = "no"):
+    """
+    Saari repos Neo4j + SQLite + memory se delete karo.
+ 
+    DELETE /api/code-intelligence/repos/all?confirm=yes
+ 
+    IMPORTANT: confirm=yes pass karna zaroori hai — warna kaam nahi karega.
+    """
+    if confirm.lower() != "yes":
+        return {
+            "status":  "not_confirmed",
+            "message": "confirm=yes query param pass karo",
+            "example": "DELETE /api/code-intelligence/repos/all?confirm=yes",
+        }
+ 
+    from app.services.repo_service import _jobs, JOBS_DB
+    import sqlite3
+ 
+    result = {
+        "neo4j_deleted":   0,
+        "sqlite_deleted":  0,
+        "memory_cleared":  0,
+        "errors":          [],
+    }
+ 
+    # ── Neo4j — poora wipe ────────────────────────────────────────────────
+    try:
+        from app.code_intelligence.graph.neo4j_store import Neo4jStore
+        # Kisi bhi connected repo ka store use karo
+        if _jobs:
+            first_id = next(iter(_jobs))
+            store  = Neo4jStore(repo_id=first_id)
+            driver = store._connect()
+        else:
+            # Direct connection try karo
+            import os
+            from neo4j import GraphDatabase
+            driver = GraphDatabase.driver(
+                os.getenv("NEO4J_URI"),
+                auth=(os.getenv("NEO4J_USERNAME","neo4j"),
+                      os.getenv("NEO4J_PASSWORD",""))
+            )
+ 
+        with driver.session() as s:
+            count = s.run("MATCH (n) RETURN count(n) AS cnt").single()["cnt"]
+            # Batch mein delete karo — large DB ke liye safe
+            s.run("MATCH (n:CodeNode)      DETACH DELETE n")
+            s.run("MATCH (n:BranchNode)    DETACH DELETE n")
+            s.run("MATCH (n:ExceptionNode) DETACH DELETE n")
+            result["neo4j_deleted"] = count
+ 
+    except Exception as e:
+        result["errors"].append(f"Neo4j: {str(e)}")
+ 
+    # ── SQLite — saari rows delete ────────────────────────────────────────
+    try:
+        with sqlite3.connect(JOBS_DB) as conn:
+            rows = conn.execute("DELETE FROM persisted_repos").rowcount
+        result["sqlite_deleted"] = rows
+    except Exception as e:
+        result["errors"].append(f"SQLite: {str(e)}")
+ 
+    # ── Memory clear ──────────────────────────────────────────────────────
+    count = len(_jobs)
+    _jobs.clear()
+    result["memory_cleared"] = count
+ 
+    result["status"] = "all_deleted" if not result["errors"] else "partial"
+    return result
+ 
+ 
+# ── 3. Storage stats ────────────────────────────────────────────────────────
+@ci_router.get("/storage/stats")
+async def storage_stats():
+    """
+    Kitna data store hai — Neo4j + SQLite dono ka breakdown.
+ 
+    GET /api/code-intelligence/storage/stats
+    """
+    from app.services.repo_service import _jobs, JOBS_DB
+    import sqlite3, os
+ 
+    result = {
+        "neo4j":  {},
+        "sqlite": {},
+        "memory": {},
+        "repos":  [],
+    }
+ 
+    # ── Neo4j stats ───────────────────────────────────────────────────────
+    try:
+        if _jobs:
+            first_id = next(iter(_jobs))
+            job = _jobs[first_id]
+            if job.get("orchestrator"):
+                store  = job["orchestrator"].store
+                from app.code_intelligence.graph.neo4j_store import Neo4jStore
+                if isinstance(store, Neo4jStore):
+                    driver = store._connect()
+                    with driver.session() as s:
+                        # Per-repo breakdown
+                        repo_rows = s.run("""
+                            MATCH (n:CodeNode)
+                            RETURN n.repo_id                      AS repo_id,
+                                   count(n)                       AS nodes,
+                                   sum(CASE WHEN n.node_type='function' THEN 1 ELSE 0 END) AS functions,
+                                   sum(CASE WHEN n.node_type='file'     THEN 1 ELSE 0 END) AS files
+                            ORDER BY nodes DESC
+                        """)
+                        repos_data = [dict(r) for r in repo_rows]
+ 
+                        # Total nodes
+                        total = s.run("MATCH (n) RETURN count(n) AS cnt").single()["cnt"]
+                        branches = s.run("MATCH (n:BranchNode) RETURN count(n) AS cnt").single()["cnt"]
+                        exceptions = s.run("MATCH (n:ExceptionNode) RETURN count(n) AS cnt").single()["cnt"]
+ 
+                    result["neo4j"] = {
+                        "total_nodes":      total,
+                        "code_nodes":       sum(r["nodes"] for r in repos_data),
+                        "branch_nodes":     branches,
+                        "exception_nodes":  exceptions,
+                        "repos_breakdown":  repos_data,
+                    }
+    except Exception as e:
+        result["neo4j"]["error"] = str(e)
+ 
+    # ── SQLite stats ──────────────────────────────────────────────────────
+    try:
+        db_size = os.path.getsize(JOBS_DB) if os.path.exists(JOBS_DB) else 0
+        with sqlite3.connect(JOBS_DB) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT repo_id, git_url, status, created_at FROM persisted_repos"
+            ).fetchall()
+        result["sqlite"] = {
+            "db_size_kb": round(db_size / 1024, 2),
+            "total_repos": len(rows),
+            "repos": [dict(r) for r in rows],
+        }
+    except Exception as e:
+        result["sqlite"]["error"] = str(e)
+ 
+    # ── Memory stats ──────────────────────────────────────────────────────
+    result["memory"] = {
+        "repos_loaded": len(_jobs),
+        "repo_ids":     list(_jobs.keys()),
+        "statuses":     {rid: j.get("status") for rid, j in _jobs.items()},
+    }
+ 
+    return result    
