@@ -10,67 +10,103 @@ from app.agents.deep_context_mixin import DeepContextMixin
 class DebugAgent(DeepContextMixin,BaseAgent):
 
     SYSTEM_PROMPT = """
-Tu ek expert senior software engineer aur debugger hai.
-Tumhare paas ek codebase ka knowledge graph hai jisme
-files, functions, classes aur unke connections hain.
-
-User ne ek file ya function debug karne ko kaha hai.
-Neeche graph data hai — isse deeply analyze karo.
-
-RESPONSE FORMAT — yeh sab sections ZAROOR do, detail mein:
-
-## 1. File/Function Overview
-- File path kya hai
-- Kitne functions hain, kitni classes
-- Risk level kyun hai (CRITICAL/HIGH/MEDIUM/LOW)
-- Yeh file overall system mein kya role play karti hai
-
-## 2. Dependency Analysis
-- Yeh file/function kise depend karti hai (calls kya karta hai)
-- Kaun is file/function pe depend karta hai (callers)
-- Dependency chain kitni deep hai
-
-## 3. Problems Found
-- Har problem clearly explain karo
-- Problem kyun hai — root cause
-- Specific function ya line mention karo agar available ho
-- Risk level ke hisaab se problems rank karo
-
-## 4. Blast Radius
-- Agar yeh file change ho ya tod jaaye — kya kya toot sakta hai
-- Kitni files affected hongi
-- Kaun se critical paths break honge
-
-## 5. Fix Recommendations  
-- Har problem ka specific fix batao
-- Priority order mein likho (pehle kya fix karo)
-- Code restructuring suggestions agar zaroorat ho
-- Testing recommendations
-
-## 6. Summary
-- Ek paragraph mein overall assessment
-- Severity: CRITICAL / HIGH / MEDIUM / LOW
-
-RULES:
-- Kabhi sirf ek line mein mat chhodna
-- **STRICT GROUNDING: Sirf wahi batao jo graph data mein actually present hai.**
-  Agar graph mein kisi function ka naam nahi hai, toh uska naam mat bolo.
-  Agar line number nahi hai, toh "line X" mat likho.
-  Functions ya bugs INVENT KARNA STRICTLY FORBIDDEN HAI.
-- Agar graph data mein sirf limited info hai (e.g. sirf file path aur risk level),
-  toh wahi batao — honestly likho "Graph mein is file ka detailed function data
-  available nahi hai, yeh info available hai: [jo bhi hai]"
-- Graph data mein jo "all_functions" list hai — WAHI functions mention karo, koi aur nahi
-- Graph data mein jo "all_classes" list hai — WAHI classes mention karo, koi aur nahi
-- Risk level CRITICAL/HIGH ho toh extra detail do
-- Same file mein function define aur use hona NORMAL hai — circular dependency mat bolna
-- circular_deps list empty ho toh "No circular dependencies" likho
-- Hamesha actionable recommendations do sirf real data ke basis pe
-- Risk levels: CRITICAL > HIGH > MEDIUM > LOW — inhe exactly as-is use karo, rename mat karo
-- Test files (test_*.py, *_test.py, conftest.py) ko CRITICAL mat bolna — yeh normal test code hai
-- CRITICAL sirf tab hota hai jab production code file pe 30+ nodes depend karti hon
-- Test files mein zyada functions hona GOOD sign hai — extensive test coverage
+You are Markar AI — an elite debugging assistant and senior software architect.
+You have access to the actual file contents, complete function list with line numbers,
+dependency graph, blast radius, exception paths, complexity scores, and git churn data.
+ 
+Your job is to perform a DEEP, EXHAUSTIVE technical analysis — like a senior engineer
+who has read every line of this codebase and knows exactly what is happening and why.
+ 
+NEVER give generic answers. NEVER say "further investigation needed".
+You have the code — analyze it directly and completely.
+ 
+════════════════════════════════════════════════════════════
+RESPONSE STRUCTURE — follow this EXACTLY, every section mandatory
+════════════════════════════════════════════════════════════
+ 
+**File Overview**
+- Full file path
+- What this file does in the system — its exact responsibility
+- Total functions, total classes
+- Risk level (CRITICAL/HIGH/MEDIUM/LOW) and WHY
+ 
+**All Functions & Classes**
+List EVERY function and class with:
+- Function name + exact line number
+- What it does specifically — not generic, actual behavior
+- Parameters it accepts (names and types if available)
+- What it returns
+- What it calls internally (with line numbers)
+- Any decorators or special patterns (@router.get, @property, async def etc.)
+ 
+Example format:
+- github_auth (line 226) — Handles GitHub OAuth callback. Accepts: code (str), state (str).
+  Calls: _exchange_github_code (line 73), _fetch_github_user (line 103).
+  Returns: JSONResponse with token and user data.
+  Decorated with: @router.post("/auth/github")
+ 
+**Dependency Analysis**
+- What external files/modules this file imports
+- Which functions from other files are called here
+- Who calls THIS file from other parts of the codebase (callers list)
+- Dependency chain depth
+ 
+**Code Flow — Step by Step**
+Trace the COMPLETE execution path for the main functionality:
+- Line X → function A() called
+- Line Y → calls external_service.method()
+- Line Z → returns result to caller
+Show the full chain, not just one step.
+ 
+**Problems Found**
+For EACH problem:
+- Problem name and severity (CRITICAL/HIGH/MEDIUM/LOW)
+- Exact location: file path, function name, line number
+- Root cause — WHY is this a problem
+- Impact — what breaks because of this
+- Specific fix with exact code change needed
+ 
+If no problems found — explicitly state "No issues detected" with reasoning.
+ 
+**Blast Radius**
+- If this file/function changes or breaks — exactly what else breaks
+- Number of affected files and functions
+- Which critical paths are impacted
+- Are there circular dependencies?
+ 
+**Working Status Assessment**
+Based on actual code analysis:
+- Is the functionality implemented correctly?
+- Are all required routes/functions present?
+- Are there any missing error handlers, edge cases, or security issues?
+- Specific YES/NO on whether it is working and why
+ 
+**Fix Recommendations**
+Priority-ordered list:
+1. [CRITICAL] Fix X at line Y — exact what to change
+2. [HIGH] Add error handling for Z at line W
+3. [MEDIUM] Refactor function A to reduce complexity
+ 
+**Summary**
+- One paragraph: overall health of this file/function
+- Overall severity: CRITICAL / HIGH / MEDIUM / LOW
+- Top 3 action items
+ 
+════════════════════════════════════════════════════════════
+STRICT RULES
+════════════════════════════════════════════════════════════
+- ALWAYS answer in English — regardless of what language user writes in
+- Use ONLY data from graph_data and file_contents — never invent functions or line numbers
+- If file content is provided — read it completely and reference actual code
+- Line numbers MUST come from actual data — never guess
+- Be exhaustive — a short answer means you missed something important
+- Technical precision required — exact function names, exact line numbers, exact behavior
+- For working/not-working questions — give definitive YES/NO with code-based evidence
+- Test files are NORMAL — do not flag test_*.py as CRITICAL
+- CRITICAL only when 30+ production nodes depend on a file
 """
+
+    # debug_agent.py mein run() method replace karo
 
     def run(self, user_message: str, target: str = None,
             model: str = None) -> Dict:
@@ -79,16 +115,24 @@ RULES:
 
         if not target:
             return {
-                "answer": "Kaunsi file ya function debug karni hai? "
-                          "File path ya function naam mention karo.",
+                "answer": "Which file or function should I debug? "
+                          "Please mention the file path or function name.",
                 "agent": "debug",
             }
 
+        # Step 1 — Graph se data nikalo
         graph_data = self._collect_debug_data(target)
 
-        # ── Graph data empty hai? Real file content padhke supplement karo ──
-        graph_data = self._enrich_with_deep_context(graph_data, target)
+        # Step 2 — Actual file content read karo (disk se)
+        graph_data = self._enrich_with_file_content(graph_data, target)
 
+        # Step 3 — Deep AST context inject karo (Neo4j se branches, complexity etc.)
+        try:
+            graph_data = self.enrich_with_deep_context(graph_data, target)
+        except Exception as e:
+            print(f"[DebugAgent] Deep context failed (non-critical): {e}")
+
+        # Step 4 — LLM ko sab kuch bhejo
         answer = self.ask_llm(
             system_prompt=self.SYSTEM_PROMPT,
             user_message=user_message,
@@ -223,48 +267,103 @@ RULES:
 
         return graph_data
 
+    # debug_agent.py mein sirf _find_target() method replace karo
+
     def _find_target(self, message: str) -> str:
         import re
+        msg_lower = message.lower()
+        has_routes_word = "route" in msg_lower
 
         # Priority 1 — full file path with extension
-        file_match = re.search(
-            r'[\w/\\]+\.(py|js|ts|java|go|jsx|tsx)', message
-        )
+        file_match = re.search(r'[\w/\\]+\.(py|js|ts|java|go|jsx|tsx|rs)', message)
         if file_match:
             return file_match.group(0)
 
-        # Priority 2 — agent/module name sirf tab match karo jab clearly
-        # TARGET ho — trigger word nearby ho (within 30 chars)
-        msg_lower = message.lower()
-        debug_trigger_words = {
-            "debug", "check", "dekho", "analyze", "batao",
-            "kyun", "error", "issue", "problem", "fix", "karo"
-        }
-        agent_match = re.search(
-            r'\b(\w+_agent|\w+_store|\w+_router|\w+_service|\w+_manager)\b',
-            message, re.IGNORECASE
+        # Priority 2 — "routes me auth" pattern — routes/ path prefer karo
+        route_match = re.search(r'routes?\s+(?:me|mein|ka|ki|ke)?\s*(\w+)', msg_lower)
+        if route_match:
+            name = route_match.group(1)
+            if name not in {"me", "mein", "ka", "ki", "ke", "check", "file"}:
+                try:
+                    order_clause = "ORDER BY CASE WHEN toLower(n.file_path) CONTAINS 'routes' THEN 0 ELSE 1 END" if has_routes_word else ""
+                    candidates = self.query(f"""
+                        MATCH (n:CodeNode {{repo_id:$r, node_type:'file'}})
+                        WHERE toLower(n.file_path) CONTAINS toLower($kw)
+                        {order_clause}
+                        RETURN n.file_path AS file LIMIT 3
+                    """, kw=name)
+                    if candidates:
+                        return candidates[0]["file"]
+                except Exception:
+                    pass
+                return name
+
+        # Priority 3 — "auth file", "auth route" pattern
+        file_kw_match = re.search(
+            r'(\w+)\s+(?:file|route|routes|module|agent|service|class|function)', msg_lower
         )
-        if agent_match:
-            matched_word = agent_match.group(1).lower()
-            pos = msg_lower.find(matched_word)
-            nearby = msg_lower[max(0, pos - 30):pos + len(matched_word) + 30]
-            if any(tw in nearby for tw in debug_trigger_words):
-                return agent_match.group(1)
+        if file_kw_match:
+            name = file_kw_match.group(1)
+            skip = {"me","mein","is","the","a","an","check","koi","kuch","routes","yeh","jo"}
+            if name not in skip and len(name) > 2:
+                try:
+                    order_clause = "ORDER BY CASE WHEN toLower(n.file_path) CONTAINS 'routes' THEN 0 ELSE 1 END" if has_routes_word else ""
+                    candidates = self.query(f"""
+                        MATCH (n:CodeNode {{repo_id:$r, node_type:'file'}})
+                        WHERE toLower(n.file_path) CONTAINS toLower($kw)
+                           OR toLower(n.name) CONTAINS toLower($kw)
+                        {order_clause}
+                        RETURN n.file_path AS file LIMIT 3
+                    """, kw=name)
+                    if candidates:
+                        return candidates[0]["file"]
+                except Exception:
+                    pass
+                return name
 
-        # Priority 3 — meaningful words (stop words hata ke)
+        # Priority 4 — meaningful words — graph mein dhundho
         stop = {
-            "koi", "bug", "hay", "hai", "mein", "kya", "check", "karo",
-            "dekho", "is", "the", "a", "an", "in", "find", "show", "any",
-            "there", "file", "function", "code", "error", "issue", "problem",
-            "debug", "agent", "store", "router", "service", "manager",
-            "wala", "wali", "uska", "iska", "yeh", "yah", "aur", "bhi",
-            "kaise", "kyun", "kuch", "sab", "sirf", "pura", "poora",
+            "koi","bug","hay","hai","mein","kya","check","karo","dekho","is",
+            "the","a","an","in","find","show","any","there","file","function",
+            "code","error","issue","problem","debug","wala","wali","uska","iska",
+            "yeh","yah","aur","bhi","kaise","kyun","kuch","sab","sirf","pura",
+            "route","routes","agent","store","router","service","manager",
+            "working","or","not","me","ka","ki","ke","wo","vo","se","pe","par",
         }
-        words = [w.lower() for w in message.split()
-                 if w.lower() not in stop and len(w) > 3]
+        stop.discard("auth")
+        stop.discard("login")
+        stop.discard("github")
 
-        if words:
-            return words[0]
+        words = [w.lower().strip("?.,!") for w in message.split()
+                 if w.lower().strip("?.,!") not in stop and len(w) > 2]
+
+        for word in words[:5]:
+            try:
+                order_clause = "ORDER BY CASE WHEN toLower(n.file_path) CONTAINS 'routes' THEN 0 ELSE 1 END" if has_routes_word else ""
+                candidates = self.query(f"""
+                    MATCH (n:CodeNode {{repo_id:$r, node_type:'file'}})
+                    WHERE toLower(n.file_path) CONTAINS toLower($kw)
+                       OR toLower(n.name) CONTAINS toLower($kw)
+                    {order_clause}
+                    RETURN n.file_path AS file LIMIT 1
+                """, kw=word)
+                if candidates:
+                    return candidates[0]["file"]
+            except Exception:
+                pass
+
+        # Priority 5 — function match
+        for word in words[:5]:
+            try:
+                candidates = self.query("""
+                    MATCH (n:CodeNode {repo_id:$r, node_type:'function'})
+                    WHERE toLower(n.name) CONTAINS toLower($kw)
+                    RETURN n.name AS name LIMIT 1
+                """, kw=word)
+                if candidates:
+                    return candidates[0]["name"]
+            except Exception:
+                pass
 
         return ""
 

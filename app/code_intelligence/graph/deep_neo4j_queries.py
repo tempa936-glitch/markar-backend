@@ -93,6 +93,10 @@ class DeepGraphQueries:
 
         loops = node.get("deep_loop_count", 0)
         if loops: lines.append(f"Loops: {loops}")
+        # ← YAHAN ADD KARO:
+        source = node.get("deep_source_code", "")
+        if source:
+            lines.append(f"\nSource Code:\n{source}")
 
         return "\n".join(lines)
 

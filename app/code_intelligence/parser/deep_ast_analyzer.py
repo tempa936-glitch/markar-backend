@@ -156,7 +156,16 @@ class DeepFunctionAnalysis:
                 part += "->return"
             parts.append(part)
         return ";".join(parts)
-
+    
+    def _get_source_snippet(self) -> str:
+        try:
+            with open(self.file_path, "r", encoding="utf-8", errors="replace") as f:
+                 lines = f.readlines()
+            snippet = lines[self.line_start - 1 : self.line_end]
+            return "".join(snippet[:50])
+        except Exception:
+            return ""
+                 
     def human_summary(self) -> str:
         """Agent ke LLM prompt mein directly inject karo."""
         lines = [

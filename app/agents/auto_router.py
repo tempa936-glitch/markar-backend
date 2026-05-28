@@ -22,7 +22,11 @@ INTENT_DESCRIPTIONS = {
 
 KEYWORD_TRIGGERS = {
     "debug":  ["error", "bug", "fail", "crash", "kyun", "issue", "debug", "problem",
-               "broken", "exception", "fix", "wrong", "nahi chal", "traceback", "stack"],
+               "broken", "exception", "fix", "wrong", "nahi chal", "traceback", "stack",
+               "check", "working", "work", "kaam", "chal", "chalega", "nahi chal raha",
+               "verify", "analyze", "inspect", "review", "dekho", "dekh",
+               "working or not", "hai ya nahi", "sahi hai", "theek hai",
+               "kya ho raha", "kyun nahi", "kyu nahi", "not working"],
     "build":  ["build", "implement", "add", "create", "feature", "banao", "generate",
                "develop", "make", "write code", "new feature", "naya", "likho"],
     "qa":     ["test", "qa", "coverage", "spec", "pytest", "unit test", "integration test", "testing"],
@@ -43,11 +47,20 @@ class AutoRouterAgent:
 
     ROUTER_SYSTEM = """You are an intent classifier for a codebase AI assistant.
 Classify the user's message into exactly one of these intents:
-- ask: Code questions, finding functions/files, explaining architecture
-- debug: Errors, bugs, crashes, root cause analysis  
+
+- ask: Code questions, finding functions/files, explaining architecture, understanding code
+- debug: Errors, bugs, crashes, root cause analysis, checking if something works, verifying functionality, analyzing a file/route/function, "working or not", "check X", "verify X", "is X correct"
 - build: Implementing features, generating code, writing new code
 - qa: Test generation, unit/integration tests, coverage
 - impact: Change impact, blast radius, dependency analysis
+
+IMPORTANT RULES:
+- "check X working or not" = debug
+- "check routes me auth file" = debug  
+- "verify if X works" = debug
+- "analyze auth route" = debug
+- "is github auth working" = debug
+- Any message asking to CHECK, VERIFY, ANALYZE, INSPECT a file/function/route = debug
 
 Respond ONLY with valid JSON, no markdown, no explanation:
 {"intent": "<one of: ask|debug|build|qa|impact>", "confidence": <0.0-1.0>, "reason": "<1 sentence>"}"""

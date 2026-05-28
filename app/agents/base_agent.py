@@ -478,7 +478,7 @@ class BaseAgent:
 
         reflection_prompt = f"""You are improving an AI code analysis response.
 User QUESTION: {user_message}
-RESPONSE (first 800 chars): {response[:800]}
+RESPONSE (first 1500 chars): {response[:1500]}
 
 IMPORTANT:
 - Never shorten the response
