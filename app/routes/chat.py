@@ -36,7 +36,7 @@ class ChatRequest(BaseModel):
 
     @model_validator(mode='after')
     def map_target_to_intent(self) -> 'ChatRequest':
-        if self.target in ["ask", "debug", "build", "qa", "impact"] and not self.intent:
+        if self.target in ["ask", "debug", "impact", "build", "qa", "impact"] and not self.intent:
             self.intent = self.target
             self.target = None
         return self
@@ -128,7 +128,7 @@ async def chat(
         session_id=session_id, intent=intent, action="handle"
     ):
         from app.agents.delegation_manager import DelegationManager
-        dm     = DelegationManager(store=orch.store, repo_id=req.repo_id)
+        dm     = DelegationManager(store=orch.store, repo_id=req.repo_id, user_id=user.user_id)
         result = await dm.execute(
             message    = req.message,
             session_id = session_id,
@@ -169,7 +169,7 @@ async def chat_stream(
 
         try:
             from app.agents.delegation_manager import DelegationManager
-            dm = DelegationManager(store=orch.store, repo_id=req.repo_id)
+            dm = DelegationManager(store=orch.store, repo_id=req.repo_id,user_id = user.user_id,)
 
             async for chunk in dm.execute_stream(
                 message    = req.message,
@@ -338,6 +338,8 @@ async def build_chat(
                 detail="github_token aur repo_full_name chahiye push_pr ke liye."
             )
         result = agent.push_pr(req.session_id, req.github_token, req.repo_full_name)
+    elif req.action == "edit":
+        result = agent.edit_spec(req.session_id, req.message, req.model)    
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {req.action}")
 

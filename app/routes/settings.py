@@ -61,6 +61,7 @@ async def get_llm_settings(
     from app.core.llm_settings import get_user_llm_settings, init_llm_settings_db
     init_llm_settings_db()
     settings = get_user_llm_settings(user_id)
+    print(settings)
 
     return {"status": "success", "data": settings}
 

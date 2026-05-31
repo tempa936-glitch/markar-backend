@@ -29,6 +29,7 @@ class CodeIntelligenceOrchestrator:
 
     def __init__(self, repo_path: str, graph_storage_path: str = None, repo_id: str = None):
         self.repo_path = repo_path
+        self.repo_id   = repo_id
         import os
         storage = graph_storage_path or os.path.join(repo_path, ".code_graph")
         if os.getenv("NEO4J_URI") and repo_id:
@@ -38,7 +39,7 @@ class CodeIntelligenceOrchestrator:
             self.store = GraphStore(storage)
             print(f"  [Orchestrator] Local GraphStore")
 
-        self.agent       = ImpactAnalysisAgent(self.store)
+        self.agent       = ImpactAnalysisAgent(store=self.store,repo_id=self.repo_id,)
         self.initialized = False
         self._analyzer: Optional[GraphAnalyzer] = None
 

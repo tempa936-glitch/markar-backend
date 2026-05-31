@@ -144,7 +144,37 @@ class DependencyGraphBuilder:
                         callee_file=callee_file,
                         line_no=func.line_no
                     ))
-    
+
+    def _build_import_graph(self):
+        for file_path, file_info in self.parser.files.items():
+            file_id = f"file:{file_path}"
+            
+            for import_info in file_info.imports:
+                imported_files = self._resolve_imports(import_info.module)
+                
+                for imported_file in imported_files:
+                    if imported_file in self.parser.files:
+                        imported_id = f"file:{imported_file}"
+                        self.nodes[file_id].children.add(imported_id)
+                        self.nodes[imported_id].parents.add(file_id)
+                        self.import_map[file_path].add(imported_file)
+                        
+                        # ← YE ADD KARO — imported functions bhi link karo
+                        if import_info.names:  # "from X import a, b, c"
+                            for name in import_info.names:
+                                # caller file ke functions mein dhundho
+                                for func in self.parser.files[file_path].functions:
+                                    if name in func.calls:
+                                        callee_funcs = [
+                                            f for f in self.parser.files[imported_file].functions
+                                            if f.name == name or f.full_name.endswith(name)
+                                        ]
+                                        for callee in callee_funcs:
+                                            caller_id = f"func:{func.full_name}@{file_path}"
+                                            callee_id = f"func:{callee.full_name}@{imported_file}"
+                                            if caller_id in self.nodes and callee_id in self.nodes:
+                                                self.nodes[caller_id].children.add(callee_id)
+                                                self.nodes[callee_id].parents.add(caller_id)
     def _build_import_graph(self):
         """Build import dependencies between files."""
         for file_path, file_info in self.parser.files.items():
@@ -218,17 +248,23 @@ class DependencyGraphBuilder:
     def _resolve_imports(self, module_name: str) -> Set[str]:
         """Resolve module name to file paths."""
         result = set()
-        
+
         file_path = module_name.replace('.', '/')
-        
+
         candidates = [
             f"{file_path}.py",
             f"{file_path}/__init__.py",
             f"{file_path}/index.py",
         ]
-        
+
         for candidate in candidates:
+            # Forward slash check
             if candidate in self.parser.files:
                 result.add(candidate)
-        
+                continue
+            # Windows backslash check
+            win_candidate = candidate.replace('/', '\\')
+            if win_candidate in self.parser.files:
+                result.add(win_candidate)
+
         return result

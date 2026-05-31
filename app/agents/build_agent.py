@@ -84,18 +84,28 @@ Sirf JSON array do.
     # ─────────────────────────────────────────────────────────────────
     # Step 1 — Clarifying questions poocho
     # ─────────────────────────────────────────────────────────────────
-    def clarify(self, session_id: str, feature_request: str,
-                model: str = None) -> Dict:
+    def clarify(self, session_id: str, feature_request: str, model: str = None) -> Dict:
         """
         Pehla step — feature samjho, sawaal poocho.
         """
         # Graph se relevant context nikalo
-        context = self._get_relevant_context(feature_request)
+       
+        tools_context = self._gather_context_with_tools(feature_request)
 
         questions_raw = self.ask_llm(
             system_prompt=self.CLARIFY_PROMPT,
             user_message=feature_request,
-            graph_context=context,
+            graph_context=tools_context,
+            model=model,
+        )
+
+         # Tool-based context gathering
+        tools_context = self._gather_context_with_tools(feature_request)
+        
+        questions_raw = self.ask_llm(
+            system_prompt=self.CLARIFY_PROMPT,
+            user_message=feature_request,
+            graph_context=tools_context,
             model=model,
         )
 
@@ -115,7 +125,7 @@ Sirf JSON array do.
         self._sessions[session_id] = {
             "stage":           "clarifying",
             "feature_request": feature_request,
-            "context":         context,
+            "context":         tools_context,
             "questions":       questions,
             "answers":         {},
             "spec":            None,
@@ -128,16 +138,82 @@ Sirf JSON array do.
             "message":   "Kuch cheezein samajhni hain implement karne se pehle:",
             "agent":     "build",
         }
+    
+
+    def _gather_context_with_tools(self, feature_request: str) -> Dict:
+        """Tool calls se relevant context gather karo."""
+        context = {}
+        
+        # Keywords extract karo
+        stop = {"add","make","create","build","implement","the","a","an","in","for"}
+        keywords = [w.lower().strip("?.,!") for w in feature_request.split()
+                    if w.lower() not in stop and len(w) > 2][:4]
+        
+        # Tool 1 — Relevant files dhundho
+        all_nodes = []
+        seen = set()
+        for kw in keywords:
+            rows = self.query("""
+                MATCH (n:CodeNode {repo_id:$r})
+                WHERE n.node_type IN ['function','file']
+                AND (toLower(n.name) CONTAINS toLower($w)
+                OR  toLower(n.file_path) CONTAINS toLower($w))
+                RETURN n.name AS name, n.file_path AS file,
+                    n.node_type AS type, n.line_no AS line,
+                    n.deep_risk_level AS risk
+                LIMIT 8
+            """, w=kw)
+            for r in rows:
+                key = f"{r['file']}:{r['name']}"
+                if key not in seen:
+                    all_nodes.append(r)
+                    seen.add(key)
+        
+        # Tool 2 — High impact files
+        hotspots = self.query("""
+            MATCH (f:CodeNode {repo_id:$r, node_type:'file'})
+            OPTIONAL MATCH ()-[:DEPENDS_ON]->(f)
+            WITH f, count(*) AS deps
+            ORDER BY deps DESC LIMIT 8
+            RETURN f.file_path AS path, deps AS dependents
+        """)
+        
+        # Tool 3 — Existing similar functions
+        similar_funcs = []
+        for kw in keywords[:2]:
+            rows = self.query("""
+                MATCH (n:CodeNode {repo_id:$r, node_type:'function'})
+                WHERE toLower(n.name) CONTAINS toLower($w)
+                RETURN n.name AS name, n.file_path AS file,
+                    n.line_no AS line, n.deep_source_code AS source
+                LIMIT 5
+            """, w=kw)
+            similar_funcs.extend(rows)
+        
+        # Tool 4 — Test files
+        test_files = self.query("""
+            MATCH (f:CodeNode {repo_id:$r, node_type:'file'})
+            WHERE toLower(f.file_path) CONTAINS 'test'
+            RETURN f.file_path AS path LIMIT 5
+        """)
+        
+        context = {
+            "feature_request":   feature_request,
+            "relevant_nodes":    all_nodes,
+            "related_files":     list(set(n["file"] for n in all_nodes)),
+            "high_impact_files": [h["path"] for h in hotspots],
+            "similar_functions": similar_funcs,
+            "test_files":        [t["path"] for t in test_files],
+        }
+        
+        print(f"[BuildAgent] Context gathered: {len(all_nodes)} nodes, {len(similar_funcs)} similar funcs")
+        return context
 
     # ─────────────────────────────────────────────────────────────────
     # Step 2 — Answers lo, spec banao
     # ─────────────────────────────────────────────────────────────────
     def make_spec(self, session_id: str, answers: Dict[str, str],
-                  model: str = None) -> Dict:
-        """
-        User ke answers leke spec banao.
-        answers = { "question": "user ka jawab" }
-        """
+              model: str = None) -> Dict:
         session = self._sessions.get(session_id)
         if not session:
             return {"error": "Session nahi mila. Naya build shuru karo."}
@@ -145,10 +221,7 @@ Sirf JSON array do.
         session["answers"] = answers
         session["stage"]   = "planning"
 
-        # Answers ko context mein add karo
-        qa_text = "\n".join(
-            f"Q: {q}\nA: {a}" for q, a in answers.items()
-        )
+        qa_text = "\n".join(f"Q: {q}\nA: {a}" for q, a in answers.items())
 
         full_context = {
             **session["context"],
@@ -163,9 +236,7 @@ Sirf JSON array do.
             model=model,
         )
 
-        # JSON spec parse karo
         try:
-            # LLM kabhi kabhi ```json ``` wrap karta hai
             clean = spec_raw.strip()
             if "```" in clean:
                 clean = clean.split("```")[1]
@@ -175,28 +246,85 @@ Sirf JSON array do.
         except Exception as e:
             print(f"[BuildAgent] Spec parse failed: {e}")
             spec = {
-                "feature":          session["feature_request"],
-                "summary":          spec_raw[:200],
-                "files_to_modify":  [],
-                "files_to_create":  [],
+                "feature":             session["feature_request"],
+                "summary":             spec_raw[:200],
+                "files_to_modify":     [],
+                "files_to_create":     [],
                 "dependencies_to_add": [],
-                "risks":            [],
-                "estimated_time":   "unknown",
+                "risks":               [],
+                "estimated_time":      "unknown",
             }
 
         session["spec"] = spec
 
-        # Human readable plan banao
+        # Human-readable plan
         plan_text = self._format_plan(spec)
 
         return {
             "stage":   "confirm",
             "spec":    spec,
             "plan":    plan_text,
-            "message": "Yeh plan hai. Approve karo toh code generate karunga:",
-            "agent":   "build",
+            "message": "Yeh plan hai. 3 options hain:",
+            "options": [
+                "✅ approve — code generate karo",
+                "✏️  edit — plan mein changes chahiye",
+                "❌ cancel — band karo",
+            ],
+            "agent": "build",
         }
+    
 
+    def edit_spec(self, session_id: str, feedback: str, model: str = None) -> Dict:
+        """User ne plan edit karna chahta hai — replan karo."""
+        session = self._sessions.get(session_id)
+        if not session or not session.get("spec"):
+            return {"error": "Koi plan nahi mila."}
+
+        current_spec = json.dumps(session["spec"], indent=2)
+
+        replan_prompt = f"""
+    Current plan hai:
+    {current_spec}
+
+    User ka feedback:
+    {feedback}
+
+    Updated plan banao is feedback ke according.
+    Same JSON format mein do.
+    """
+
+        spec_raw = self.ask_llm(
+            system_prompt=self.SPEC_PROMPT,
+            user_message=replan_prompt,
+            graph_context=session["context"],
+            model=model,
+        )
+
+        try:
+            clean = spec_raw.strip()
+            if "```" in clean:
+                clean = clean.split("```")[1]
+                if clean.startswith("json"):
+                    clean = clean[4:]
+            new_spec = json.loads(clean)
+        except Exception:
+            return {"error": "Replan fail hua. Dobara try karo."}
+
+        session["spec"] = new_spec
+        plan_text = self._format_plan(new_spec)
+
+        return {
+            "stage":   "confirm",
+            "spec":    new_spec,
+            "plan":    plan_text,
+            "message": "Updated plan ready hai. Approve karo?",
+            "options": [
+                "✅ approve — code generate karo",
+                "✏️  edit — aur changes chahiye",
+                "❌ cancel — band karo",
+            ],
+            "agent": "build",
+        }
     # ─────────────────────────────────────────────────────────────────
     # Step 3 — Permission leke code generate karo
     # ─────────────────────────────────────────────────────────────────
@@ -248,9 +376,31 @@ Sirf JSON array do.
             "stage":     "review",
             "files":     generated,
             "message":   "Code ready hai. Review karo phir PR push karo:",
+            "summary": self._format_build_summary(generated),
             "pr_ready":  True,
             "agent":     "build",
         }
+    
+    def _format_build_summary(self, generated: List[Dict]) -> str:
+        """Build ka clear summary — kya kya bana."""
+        lines = ["## Build Complete — Yeh files ready hain:\n"]
+        
+        created  = [f for f in generated if f["action"] == "create"]
+        modified = [f for f in generated if f["action"] == "modify"]
+        
+        if created:
+            lines.append("### 🆕 Naye Files Bane:")
+            for f in created:
+                lines.append(f"  - `{f['path']}`")
+        
+        if modified:
+            lines.append("\n### ✏️ Modified Files:")
+            for f in modified:
+                lines.append(f"  - `{f['path']}`")
+        
+        lines.append(f"\n**Total:** {len(generated)} files")
+        lines.append("\nReview karo phir `push_pr` karo GitHub pe.")
+        return "\n".join(lines)
 
     # ─────────────────────────────────────────────────────────────────
     # Step 4 — GitHub PR push karo

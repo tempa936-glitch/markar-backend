@@ -75,9 +75,10 @@ class DelegationManager:
     5. Save result to history
     """
 
-    def __init__(self, store=None, repo_id: str = ""):
+    def __init__(self, store=None, repo_id: str = "", user_id: str = "dev-user"):
         self.store          = store
         self.repo_id        = repo_id
+        self.user_id        = user_id
         self.router         = get_router()
         self.history_store  = get_compressed_store()
         self.summarizer     = get_summarizer()
@@ -109,6 +110,7 @@ class DelegationManager:
                 session_id=session_id,
                 conv_store=self._get_conv_store(),
                 tool_registry=self._get_tool_registry(),
+                user_id      = self.user_id,
             )
 
             if intent == "ask":
@@ -125,7 +127,7 @@ class DelegationManager:
                 self._agents["qa"] = QAAgent(**shared)
             elif intent == "impact":
                 from app.agents.impact_agent import ImpactAnalysisAgent
-                self._agents["impact"] = ImpactAnalysisAgent(self.store)
+                self._agents["impact"] = ImpactAnalysisAgent(store=self.store,repo_id=self.repo_id,user_id=self.user_id)
             else:
                 from app.agents.ask_agent import AskAgent
                 self._agents[intent] = AskAgent(**shared)
@@ -359,19 +361,18 @@ class DelegationManager:
                     None, lambda: agent.run(message, target, model)
                 )
             elif intent == "impact":
-                if target:
-                    impact = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: agent.analyze_function_change(target)
-                    )
-                    return {
-                        "answer": self._format_impact(impact),
-                        "agent":  "impact",
-                    }
-                else:
-                    return {
-                        "answer": "Kaunsi file ya function ka impact analyze karna hai? Target batao.",
-                        "agent":  "impact",
-                    }
+                return await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: agent.run(message, target, model)
+                )
+                #     return {
+                #         "answer": self._format_impact(impact),
+                #         "agent":  "impact",
+                #     }
+                # else:
+                #     return {
+                #         "answer": "Kaunsi file ya function ka impact analyze karna hai? Target batao.",
+                #         "agent":  "impact",
+                #     }
             elif intent == "qa":
                 return await asyncio.get_event_loop().run_in_executor(
                     None, lambda: agent.run(message, target, model)
@@ -452,11 +453,31 @@ CRITICAL FORMATTING RULES:
     ) -> Optional[str]:
         needs_target = {"debug", "impact"}
         if intent in needs_target and not target:
-            # Only ask if message doesn't contain file/function hints
+            msg_lower = message.lower()
+            # File/function hints check karo
             has_hint = any(
-                ext in message for ext in [".py", ".js", ".ts", ".go", ".java", "/", "function", "class", "def "]
+                ext in message for ext in [
+                    ".py", ".js", ".ts", ".go", ".java", "/", "\\",
+                    "function", "class", "def ", "route", "routes",
+                    "file", "module", "agent", "service", "auth",
+                    "login", "api", "endpoint", "controller", "model",
+                ]
             )
-            if not has_hint:
+            # Meaningful keywords jo graph mein search ho saken
+            meaningful_words = [
+                w for w in msg_lower.split()
+                if len(w) > 3 and w not in {
+                    "check", "karo", "dekho", "working", "debug",
+                    "analyze", "verify", "inspect", "mein", "hai",
+                    "kya", "or", "not", "the", "and", "that", "this",
+                    "routes", "route", "file", "github", "auth",
+                }
+            ]
+            # Agar message mein koi searchable content hai toh clarification mat maango
+            # DebugAgent khud graph mein dhund lega
+            has_searchable_content = len(meaningful_words) >= 1 or has_hint
+
+            if not has_searchable_content:
                 labels = {"debug": "file ya function", "impact": "file ya function"}
                 return f"Kaunsi {labels[intent]} analyze karni hai? File path ya function naam batao."
         return None

@@ -144,6 +144,7 @@ class DeepFunctionAnalysis:
             "deep_branch_paths":    self._serialize_branches(),
             "deep_data_inputs":     "|".join(self.data_flow.inputs[:10]),
             "deep_data_returns":    "|".join(self.data_flow.returns[:5]),
+            "deep_source_code":     self._get_source_snippet(),
         }
 
     def _serialize_branches(self) -> str:

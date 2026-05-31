@@ -257,7 +257,7 @@ AVAILABLE_MODELS = [
     {"id": "meta-llama/llama-3.3-70b-instruct:free", "name": "Llama 3.3 70B",        "provider": "Meta",      "free": True},
     {"id": "deepseek/deepseek-r1:free",              "name": "DeepSeek R1",           "provider": "DeepSeek",  "free": True},
     {"id": "mistralai/mistral-small-3.1-24b-instruct:free", "name": "Mistral Small", "provider": "Mistral",   "free": True},
-    {"id": "google/gemini-2.0-flash-lite-preview-02-05:free","name": "Gemini 2.0 Flash Lite","provider":"Google","free": True},
+    {"id": "google/gemini-2.5-flash",                "name": "Gemini 2.5 Flash",      "provider": "Google",    "free": True},
     {"id": "qwen/qwen3-8b:free",                     "name": "Qwen3 8B",              "provider": "Alibaba",   "free": True},
     {"id": "openai/gpt-4o",                          "name": "GPT-4o",                "provider": "OpenAI",    "free": False},
     {"id": "openai/gpt-4o-mini",                     "name": "GPT-4o Mini",           "provider": "OpenAI",    "free": False},
