@@ -251,10 +251,7 @@ class DelegationManager:
 
         # ── 7. Self-reflection on answer ──────────────────────────────────
         answer = result.get("answer", "")
-        reflect_enabled = (
-            len(answer) > 80 and
-            os.getenv("MARKAR_REFLECTION", "true").lower() == "true"
-        )
+        reflect_enabled = False
         if reflect_enabled and hasattr(agent, "reflect_and_improve"):
             try:
                 improved = agent.reflect_and_improve(answer, message, {}, model)
@@ -428,7 +425,7 @@ class DelegationManager:
         formatting_rules = """
         
 CRITICAL FORMATTING RULES:
-1. Apne jawab ek professional aur highly-readable format me do. Jawab concise aur short rakho.
+1. Apne jawab ek professional aur highly-readable format me do. Jawab detailed aur complete rakho — koi bhi information mat chordo.
 2. Headings ko hamesha **Bold** (`**Heading Name**`) rakho. `#` ya `###` ka use mat karo.
 3. File paths, function names aur important keywords ko bhi **Bold** (`**file.py**`) karo.
 4. IMPORTANT: Kisi bhi halat me backticks (`) ka use mat karo kyonki frontend unhe render nahi karta. Code snippets ke liye normal line breaks use karo.

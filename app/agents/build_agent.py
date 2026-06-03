@@ -76,7 +76,7 @@ Sirf JSON array do.
 """
 
     def __init__(self, store, repo_id: str = "", session_id: str = None,
-             conv_store=None, tool_registry=None):
+             conv_store=None, tool_registry=None,user_id: str = "dev-user"):
         super().__init__(store, repo_id, session_id, conv_store, tool_registry)
         # Build session state — multi-step conversation
         self._sessions: Dict[str, Dict] = {}

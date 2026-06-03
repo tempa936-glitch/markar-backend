@@ -18,6 +18,7 @@ from app.routes.admin  import admin_router
 from app.routes.auth   import auth_router
 from app.routes.settings import settings_router
 from app.routes.features import trace_router, recipe_router, agents_router, forge_router, sandbox_router
+from app.routes.payment import payment_router
 
 app = FastAPI(
     title="Markar Intelligence",
@@ -46,6 +47,7 @@ app.include_router(recipe_router)
 app.include_router(agents_router)
 app.include_router(forge_router)
 app.include_router(sandbox_router)
+app.include_router(payment_router)
 
 
 @app.on_event("startup")
@@ -115,6 +117,11 @@ async def startup():
     from app.core.user_admin import init_user_admin_db
     init_user_admin_db()
     print("[Markar] User Admin DB initialized — credits + limits ready")
+
+    # Payment — Razorpay
+    from app.routes.payment import init_payment_db
+    init_payment_db()
+    print("[Markar] Payment DB initialized — Razorpay ready")
 
     # Feature: Trace + Recipes
     from app.core.trace_manager import init_trace_db

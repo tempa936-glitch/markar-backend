@@ -383,7 +383,7 @@ def check_repo_limit(user_id: str) -> Dict[str, Any]:
         "plan":     limits["plan"],
     }
 
-SIGNUP_FREE_CREDITS = int(os.getenv("MARKAR_SIGNUP_CREDITS", "30"))
+SIGNUP_FREE_CREDITS = int(os.getenv("MARKAR_SIGNUP_CREDITS", "10"))
 
 # ── Repo Tier Credit System ────────────────────────────────────────────────────
 

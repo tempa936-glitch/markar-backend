@@ -189,6 +189,35 @@ class DependencyGraphBuilder:
                         self.nodes[file_id].children.add(imported_id)
                         self.nodes[imported_id].parents.add(file_id)
                         self.import_map[file_path].add(imported_file)
+                        
+                        # ← YE ADD KARO — cross-file function relationships
+                        if not import_info.items:
+                            continue
+                        
+                        for imported_name in import_info.items:
+                            # Imported function ko caller file ke functions se match karo
+                            for caller_func in file_info.functions:
+                                if imported_name not in caller_func.calls:
+                                    continue
+                                
+                                # Callee dhundho imported file mein
+                                for callee_func in self.parser.files[imported_file].functions:
+                                    if (callee_func.name == imported_name or 
+                                        callee_func.full_name.endswith(imported_name)):
+                                        
+                                        caller_id = f"func:{caller_func.full_name}@{file_path}"
+                                        callee_id = f"func:{callee_func.full_name}@{imported_file}"
+                                        
+                                        if caller_id in self.nodes and callee_id in self.nodes:
+                                            self.nodes[caller_id].children.add(callee_id)
+                                            self.nodes[callee_id].parents.add(caller_id)
+                                            self.call_relations.append(CallRelation(
+                                                caller=caller_func.full_name,
+                                                callee=callee_func.full_name,
+                                                caller_file=file_path,
+                                                callee_file=imported_file,
+                                                line_no=caller_func.line_no
+                                            ))
     
     # ── External prefixes to skip — no changes needed ─────────────────────
     _EXTERNAL_PREFIXES = (
@@ -246,25 +275,22 @@ class DependencyGraphBuilder:
         return None
     
     def _resolve_imports(self, module_name: str) -> Set[str]:
-        """Resolve module name to file paths."""
         result = set()
-
         file_path = module_name.replace('.', '/')
-
+        
         candidates = [
             f"{file_path}.py",
             f"{file_path}/__init__.py",
             f"{file_path}/index.py",
         ]
-
+        
         for candidate in candidates:
-            # Forward slash check
             if candidate in self.parser.files:
                 result.add(candidate)
                 continue
             # Windows backslash check
-            win_candidate = candidate.replace('/', '\\')
-            if win_candidate in self.parser.files:
-                result.add(win_candidate)
-
+            win = candidate.replace('/', '\\')
+            if win in self.parser.files:
+                result.add(win)
+        
         return result
