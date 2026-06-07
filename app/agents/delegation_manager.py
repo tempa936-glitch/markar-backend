@@ -137,6 +137,53 @@ class DelegationManager:
         if hasattr(agent, "session_id"):
             agent.session_id = session_id
         return agent
+    
+    def _enforce_tool_calling_for_ask(self, message: str, intent: str) -> str:
+        """
+        Ask intent ke liye force tool instruction inject karo.
+        Without this, LLM kabhi hallucinate kar leta hai "Explain" pe.
+        """
+        if intent != "ask":
+            return message
+        
+        # Codebase-related question detect karo
+        code_patterns = [
+            "explain", "purpose", "what does", "kaam", "kya", "batao", "samjhao",
+            ".py", ".js", ".ts", ".go", ".java", "file", "function", "code",
+            "repo_service", "service", "agent", "router", "handler", "controller",
+            "how does", "working", "check", "verify", "analyze"
+        ]
+        
+        is_code_question = any(p in message.lower() for p in code_patterns)
+        
+        if not is_code_question:
+            return message
+        
+        # Agar user ne already tool format likh diya hai to double injection mat karo
+        if "TOOL:" in message.upper() and "ARG:" in message.upper():
+            return message
+        
+        # Force instruction inject karo
+        forced_message = f"""🔧 SYSTEM ENFORCEMENT - TOOL CALLING MANDATORY 🔧
+
+    You are answering a CODEBASE question about a REAL codebase. You have ZERO knowledge of this codebase outside of tool results.
+
+    ABSOLUTE RULES:
+    1. You MUST call search_nodes FIRST
+    2. Then get_source_code on the main function
+    3. Then MUST call get_callers
+    4. Then MUST call get_callees
+    5. You are FORBIDDEN to write any final answer before completing steps 1-4
+    6. If you write an answer without calling all tools, it will be REJECTED
+    If you violate these rules, your answer will be REJECTED.
+
+    Original question: {message}
+
+   Remember: Start with TOOL: search_nodes
+   NEVER write "Not found" without trying get_file_functions first."""
+        
+        print(f"[Delegation] Tool enforcement injected for ask intent")
+        return forced_message
 
     # ── Main execute method ───────────────────────────────────────────────────
 
@@ -176,6 +223,13 @@ class DelegationManager:
         else:
             confidence   = 1.0
             route_method = "explicit"
+
+        # ═══════════════════════════════════════════════════════════════════
+        # 🔧 NEW: Tool enforcement for ask intent (force tool calling)
+        # ═══════════════════════════════════════════════════════════════════
+        original_message = message  # save for logging if needed
+        message = self._enforce_tool_calling_for_ask(message, intent)
+        # ═══════════════════════════════════════════════════════════════════    
 
         # Trace: routing
         tracer.log(TraceEvent(
